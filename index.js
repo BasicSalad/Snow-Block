@@ -10,6 +10,7 @@ const titleScreenEl = document.getElementById('title-screen');
 const instructionsEl = document.getElementById('instructions');
 const winMessageEl = document.getElementById('win-message');
 const finalMessageEl = document.getElementById('final-message');
+const platformTextEl = document.getElementById('platform-text');
 const trailCanvas = document.createElement('canvas');
 const trailCtx = trailCanvas.getContext('2d');
 
@@ -20,6 +21,8 @@ const gameState = {
     isDragging: false,
     lastPointerX: 0,
     lastPointerY: 0,
+    pushOffsetX: 0,
+    pushOffsetY: 0,
     totalDistancePushed: 0,
     upwardForce: 0,
     motionHintShown: false,
@@ -44,6 +47,7 @@ let winMessageFontSize = 40; // default
 // --- AUDIO ---
 let audioContext;
 let dragSoundNode = null;
+let ambientSoundNode = null;
 
 
 // --- GAME CONFIG & PHYSICS ---
@@ -56,8 +60,12 @@ const physics = {
 };
 const START_SIZE = 50;
 const MAX_SIZE_FACTOR = 4;
-const WIN_ZONE_HEIGHT = 50;
-const NUM_SHARDS = 8;
+const NUM_SHARDS = 20;
+const targetZone = {
+    x: 0,
+    y: 60,
+    size: START_SIZE,
+};
 
 // --- 3D RENDERING DATA ---
 // Basic unit cube, used for non-title screen rendering
@@ -92,6 +100,9 @@ function setup() {
   trailCanvas.width = canvas.width;
   trailCanvas.height = canvas.height;
   winMessageFontSize = 2.5 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+
+  // Set target zone position
+  targetZone.x = canvas.width / 2;
 
   // Pre-generate letter meshes
   for (const char in letterShapes) {
@@ -135,6 +146,9 @@ function setupGame() {
   instructionsEl.textContent = '';
   instructionsEl.classList.add('hidden');
   
+  platformTextEl.textContent = 'A change in perspective is all it takes.';
+  platformTextEl.classList.remove('hidden');
+
   Array.from(winMessageEl.children).forEach(span => {
     span.style.transform = '';
   });
@@ -234,10 +248,26 @@ function updateGame() {
     cube.vRy *= physics.rotationalDamping;
 
     const halfSize = cube.size / 2;
-    if (cube.y > canvas.height - halfSize) { cube.y = canvas.height - halfSize; cube.vy *= physics.bounce; }
-    if (cube.y < halfSize && gameState.current !== 'smashing' && cubes.length <= 1) { cube.y = halfSize; cube.vy *= physics.bounce; }
-    if (cube.x < halfSize) { cube.x = halfSize; cube.vx *= physics.bounce; }
-    if (cube.x > canvas.width - halfSize) { cube.x = canvas.width - halfSize; cube.vx *= physics.bounce; }
+    if (cube.y > canvas.height - halfSize) {
+        playCollisionSound(audioContext, Math.abs(cube.vy));
+        cube.y = canvas.height - halfSize;
+        cube.vy *= physics.bounce;
+    }
+    if (cube.y < halfSize && gameState.current !== 'smashing' && cubes.length <= 1) {
+        playCollisionSound(audioContext, Math.abs(cube.vy));
+        cube.y = halfSize;
+        cube.vy *= physics.bounce;
+    }
+    if (cube.x < halfSize) {
+        playCollisionSound(audioContext, Math.abs(cube.vx));
+        cube.x = halfSize;
+        cube.vx *= physics.bounce;
+    }
+    if (cube.x > canvas.width - halfSize) {
+        playCollisionSound(audioContext, Math.abs(cube.vx));
+        cube.x = canvas.width - halfSize;
+        cube.vx *= physics.bounce;
+    }
     
     if (gameState.current === 'playing' && gameState.isDragging && Math.hypot(cube.x - prevX, cube.y - prevY) > 1) {
         drawTrailSegment(prevX, prevY, cube.x, cube.y, cube.size);
@@ -257,7 +287,14 @@ function updateGame() {
   const mainCube = cubes[0];
   if (cubes.length === 1 && mainCube) {
       if (gameState.current === 'playing') {
-        if (mainCube.y < WIN_ZONE_HEIGHT + mainCube.size / 2) winGame();
+        const isHorizontallyAligned = Math.abs(mainCube.x - targetZone.x) < targetZone.size / 2;
+        const isVerticallyAligned = Math.abs(mainCube.y - targetZone.y) < targetZone.size / 2;
+        const isCorrectSize = Math.abs(mainCube.size - targetZone.size) < 5;
+
+        if (isHorizontallyAligned && isVerticallyAligned && isCorrectSize) {
+            winGame();
+        }
+
         const maxSize = canvas.width / MAX_SIZE_FACTOR;
         if (mainCube.size >= maxSize) showTemporaryMessageAndReset("It shattered under its own weight.", shatterAndReset);
       } else if (gameState.current === 'smashing') {
@@ -279,9 +316,37 @@ function updateGame() {
   }
 }
 
+function drawGameUI() {
+    // Draw starting line
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 1;
+    const startCubeY = canvas.height - START_SIZE * 1.5;
+    const startLineY = startCubeY + START_SIZE / 2 + 5;
+    const startLineWidth = START_SIZE * 1.2;
+    ctx.beginPath();
+    ctx.moveTo(canvas.width / 2 - startLineWidth / 2, startLineY);
+    ctx.lineTo(canvas.width / 2 + startLineWidth / 2, startLineY);
+    ctx.stroke();
+
+    // Draw target box
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(
+        targetZone.x - targetZone.size / 2,
+        targetZone.y - targetZone.size / 2,
+        targetZone.size,
+        targetZone.size
+    );
+}
+
 function drawGame() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(trailCanvas, 0, 0);
+
+  if (gameState.current === 'playing' || gameState.current === 'smashing') {
+    drawGameUI();
+  }
+  
   cubes.forEach(c => drawWireframeObject(c, UNIT_CUBE_VERTICES, CUBE_EDGES, projectedVertices));
 
   if (textShards.length > 0) {
@@ -525,6 +590,7 @@ function winGame() {
     gameState.current = 'won';
     winMessageEl.classList.remove('hidden');
     instructionsEl.classList.add('hidden');
+    platformTextEl.classList.add('hidden');
     cubes.forEach(cube => { cube.vx = cube.vy = cube.vRx = cube.vRy = 0; });
     playWinSound(audioContext);
 }
@@ -549,6 +615,8 @@ function handlePointerDown(e) {
   gameState.isDragging = true;
   gameState.lastPointerX = e.clientX;
   gameState.lastPointerY = e.clientY;
+  gameState.pushOffsetX = e.clientX - mainCube.x;
+  gameState.pushOffsetY = e.clientY - mainCube.y;
   mainCube.vx = mainCube.vy = mainCube.vRx = mainCube.vRy = 0;
   canvas.style.cursor = 'grabbing';
   startDragSound(audioContext);
@@ -578,8 +646,9 @@ function handlePointerMove(e) {
   mainCube.vx += (deltaX * physics.pushMultiplier) / mainCube.mass;
   mainCube.vy += (deltaY * physics.pushMultiplier) / mainCube.mass;
   
-  mainCube.vRx -= (deltaY * 0.001) / mainCube.mass;
-  mainCube.vRy += (deltaX * 0.001) / mainCube.mass;
+  const rotationalMultiplier = 0.00005;
+  mainCube.vRx -= (deltaY * gameState.pushOffsetX * rotationalMultiplier) / mainCube.mass;
+  mainCube.vRy += (deltaX * gameState.pushOffsetY * rotationalMultiplier) / mainCube.mass;
   
   gameState.lastPointerX = e.clientX;
   gameState.lastPointerY = e.clientY;
@@ -611,6 +680,59 @@ function handleDeviceOrientation(e) {
 }
 
 // --- SOUND SYNTHESIS ---
+function playCollisionSound(context, velocity) {
+    if (!context || velocity < 0.1) return;
+
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+    osc.connect(gain);
+    gain.connect(context.destination);
+
+    const now = context.currentTime;
+    const peakGain = Math.min(0.4, velocity / 25);
+    const baseFrequency = 80;
+    const frequency = Math.max(40, baseFrequency - velocity * 2);
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(frequency, now);
+
+    gain.gain.setValueAtTime(peakGain, now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+
+    osc.start(now);
+    osc.stop(now + 0.2);
+}
+
+function startAmbientSound(context) {
+    if (!context || ambientSoundNode) return;
+
+    const bufferSize = 2 * context.sampleRate;
+    const noiseBuffer = context.createBuffer(1, bufferSize, context.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+        output[i] = Math.random() * 2 - 1;
+    }
+
+    const noise = context.createBufferSource();
+    noise.buffer = noiseBuffer;
+    noise.loop = true;
+
+    const filter = context.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.value = 150;
+
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0, context.currentTime);
+    gain.gain.linearRampToValueAtTime(0.03, context.currentTime + 3); // Fade in
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(context.destination);
+
+    noise.start();
+    ambientSoundNode = { noise, filter, gain };
+}
+
 function playShatterSound(context) {
     if (!context) return;
     const duration = 0.5;
@@ -690,6 +812,7 @@ window.addEventListener('pointerup', handlePointerUp);
 function handleTitleTap() {
     if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        startAmbientSound(audioContext);
     }
 
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
