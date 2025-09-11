@@ -6,23 +6,21 @@
 // --- DOM ELEMENTS ---
 const canvas = document.getElementById('game-canvas');
 const ctx = canvas.getContext('2d');
-const gameContainerEl = document.getElementById('game-container');
 const titleScreenEl = document.getElementById('title-screen');
 const instructionsEl = document.getElementById('instructions');
 const winMessageEl = document.getElementById('win-message');
-const resetButton = document.getElementById('reset-button');
+const finalMessageEl = document.getElementById('final-message');
 const trailCanvas = document.createElement('canvas');
 const trailCtx = trailCanvas.getContext('2d');
 
 
 // --- GAME STATE ---
 const gameState = {
-    current: 'title', // 'title', 'transitioning', 'playing'
+    current: 'title', // 'title', 'transitioning', 'playing', 'won', 'smashing'
     isDragging: false,
     lastPointerX: 0,
     lastPointerY: 0,
     totalDistancePushed: 0,
-    hasWon: false,
     upwardForce: 0,
     motionHintShown: false,
 };
@@ -38,6 +36,7 @@ let animationFrameId;
 // --- GAME CONFIG & PHYSICS ---
 const physics = {
   snowDrag: 0.92,
+  gravity: 0.5,
   pushMultiplier: 0.3,
   rotationalDamping: 0.97,
   bounce: -0.5,
@@ -97,13 +96,19 @@ function setupGame() {
 
   Object.assign(gameState, {
       totalDistancePushed: 0, upwardForce: 0,
-      hasWon: false, isDragging: false, motionHintShown: false,
+      isDragging: false, motionHintShown: false,
   });
 
   winMessageEl.classList.add('hidden');
-  resetButton.classList.add('hidden');
+  finalMessageEl.classList.add('hidden');
   instructionsEl.textContent = '';
   instructionsEl.classList.add('hidden');
+  
+  // Reset letter styles
+  Array.from(winMessageEl.children).forEach(span => {
+    span.classList.remove('shattered');
+    span.style.transform = '';
+  });
 }
 
 function startTransition() {
@@ -116,7 +121,7 @@ function startTransition() {
     for (let i = 0; i < numCubes; i++) {
         transitionState.cubes.push({
             x: Math.random() * canvas.width,
-            y: -(Math.random() * canvas.height), // Start staggered above the screen
+            y: -(Math.random() * canvas.height),
             size: 10 + Math.random() * 20,
             rotationX: Math.random() * Math.PI * 2,
             rotationY: Math.random() * Math.PI * 2,
@@ -132,13 +137,14 @@ function startTransition() {
 function gameLoop(timestamp) {
   switch(gameState.current) {
     case 'title':
-        // The title screen is now handled by HTML/CSS, so this is intentionally empty.
         break;
     case 'transitioning':
       updateTransition();
       drawTransition();
       break;
     case 'playing':
+    case 'won':
+    case 'smashing':
       updateGame();
       drawGame();
       break;
@@ -173,15 +179,20 @@ function drawTransition() {
 
 // --- GAME LOGIC ---
 function updateGame() {
-  if (gameState.hasWon) return;
+  if (gameState.current === 'won') return;
 
   cubes.forEach((cube, index) => {
     const prevX = cube.x;
     const prevY = cube.y;
 
-    if (index === 0 && cubes.length === 1) {
+    if (gameState.current === 'playing' && index === 0 && cubes.length === 1) {
         cube.vy -= gameState.upwardForce;
     }
+    
+    if (gameState.current === 'smashing') {
+        cube.vy += physics.gravity;
+    }
+
     cube.vx *= physics.snowDrag;
     cube.vy *= physics.snowDrag;
     cube.x += cube.vx;
@@ -193,21 +204,37 @@ function updateGame() {
 
     const halfSize = cube.size / 2;
     if (cube.y > canvas.height - halfSize) { cube.y = canvas.height - halfSize; cube.vy *= physics.bounce; }
-    if (cube.y < halfSize) { cube.y = halfSize; cube.vy *= physics.bounce; }
+    if (cube.y < halfSize && gameState.current !== 'smashing') { cube.y = halfSize; cube.vy *= physics.bounce; }
     if (cube.x < halfSize) { cube.x = halfSize; cube.vx *= physics.bounce; }
     if (cube.x > canvas.width - halfSize) { cube.x = canvas.width - halfSize; cube.vx *= physics.bounce; }
     
-    const distMoved = Math.hypot(cube.x - prevX, cube.y - prevY);
-    if (gameState.isDragging && distMoved > 1) {
+    if (gameState.current === 'playing' && gameState.isDragging && Math.hypot(cube.x - prevX, cube.y - prevY) > 1) {
         drawTrailSegment(prevX, prevY, cube.x, cube.y, cube.size);
     }
   });
 
   const mainCube = cubes[0];
   if (cubes.length === 1 && mainCube) {
-      if (mainCube.y < WIN_ZONE_HEIGHT + mainCube.size / 2) winGame();
-      const maxSize = canvas.width / MAX_SIZE_FACTOR;
-      if (mainCube.size >= maxSize) shatterCube(mainCube);
+      if (gameState.current === 'playing') {
+        if (mainCube.y < WIN_ZONE_HEIGHT + mainCube.size / 2) winGame();
+        const maxSize = canvas.width / MAX_SIZE_FACTOR;
+        if (mainCube.size >= maxSize) showTemporaryMessageAndReset("It shattered under its own weight.", shatterAndReset);
+      } else if (gameState.current === 'smashing') {
+          const winMessageRect = winMessageEl.getBoundingClientRect();
+          if (mainCube.y > winMessageRect.top - mainCube.size) {
+              shatterText();
+              shatterCube(mainCube);
+              gameState.current = 'won'; // Stop further updates in smashing state
+              setTimeout(() => {
+                  finalMessageEl.classList.remove('hidden');
+                  finalMessageEl.style.opacity = '1';
+                  setTimeout(() => {
+                      gameState.current = 'playing';
+                      setupGame();
+                  }, 2500);
+              }, 1000);
+          }
+      }
   }
 }
 
@@ -253,7 +280,6 @@ function drawTrailSegment(x1, y1, x2, y2, size) {
     const nx = dx / len;
     const ny = dy / len;
     
-    // Perpendicular vector
     const px = -ny;
     const py = nx;
 
@@ -264,7 +290,6 @@ function drawTrailSegment(x1, y1, x2, y2, size) {
     const p2_start = { x: x1 - px * offset, y: y1 - py * offset };
     const p2_end = { x: x2 - px * offset, y: y2 - py * offset };
 
-    // Draw shadow
     trailCtx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
     trailCtx.lineWidth = 2;
     trailCtx.lineCap = 'round';
@@ -275,7 +300,6 @@ function drawTrailSegment(x1, y1, x2, y2, size) {
     trailCtx.lineTo(p2_end.x + 1, p2_end.y + 1);
     trailCtx.stroke();
     
-    // Draw main lines
     trailCtx.strokeStyle = '#FFFFFF';
     trailCtx.lineWidth = 1.5;
     trailCtx.beginPath();
@@ -301,27 +325,41 @@ function shatterCube(parentCube) {
         });
     }
     cubes = shards;
-    showTemporaryMessageAndReset("It shattered under its own weight.");
 }
 
+function shatterText() {
+    Array.from(winMessageEl.children).forEach(span => {
+        const x = (Math.random() - 0.5) * 100;
+        const y = Math.random() * 150 + 50;
+        const rot = (Math.random() - 0.5) * 360;
+        span.style.transform = `translate(${x}px, ${y}px) rotate(${rot}deg)`;
+        span.classList.add('shattered');
+    });
+}
+
+
 function winGame() {
-    gameState.hasWon = true;
+    gameState.current = 'won';
     winMessageEl.classList.remove('hidden');
-    resetButton.classList.remove('hidden');
     instructionsEl.classList.add('hidden');
     cubes.forEach(cube => { cube.vx = cube.vy = cube.vRx = cube.vRy = 0; });
 }
 
-function showTemporaryMessageAndReset(message) {
+function showTemporaryMessageAndReset(message, action) {
     instructionsEl.textContent = message;
     instructionsEl.classList.remove('hidden');
-    setTimeout(setupGame, 2000);
+    setTimeout(action, 2000);
+}
+
+function shatterAndReset() {
+    shatterCube(cubes[0]);
+    setTimeout(setupGame, 1500);
 }
 
 
 // --- EVENT HANDLERS ---
 function handlePointerDown(e) {
-  if (gameState.current !== 'playing' || cubes.length > 1 || gameState.hasWon) return;
+  if (gameState.current !== 'playing' || cubes.length > 1) return;
   const mainCube = cubes[0];
   if (!mainCube) return;
   gameState.isDragging = true;
@@ -332,7 +370,7 @@ function handlePointerDown(e) {
 }
 
 function handlePointerMove(e) {
-  if (!gameState.isDragging || gameState.current !== 'playing' || gameState.hasWon || cubes.length > 1) return;
+  if (!gameState.isDragging || gameState.current !== 'playing' || cubes.length > 1) return;
   const mainCube = cubes[0];
   if (!mainCube) return;
 
@@ -355,7 +393,6 @@ function handlePointerMove(e) {
   mainCube.vx += (deltaX * physics.pushMultiplier) / mainCube.mass;
   mainCube.vy += (deltaY * physics.pushMultiplier) / mainCube.mass;
   
-  // Inverted rotation for the "rolling under finger" feel
   mainCube.vRx -= (deltaY * 0.001) / mainCube.mass;
   mainCube.vRy += (deltaX * 0.001) / mainCube.mass;
   
@@ -369,19 +406,21 @@ function handlePointerUp() {
 }
 
 function handleDeviceOrientation(e) {
-  if (gameState.current !== 'playing' || gameState.hasWon || e.beta === null) return;
+  if (e.beta === null) return;
   
-  // Check if the phone is held upside down (pitch/beta is approx -90 degrees).
-  // A value less than -75 degrees should be a reliable indicator.
-  if (e.beta < -75) {
-    gameState.upwardForce = 0.1;
-    if (cubes.length === 1 && !gameState.motionHintShown) {
-        instructionsEl.textContent = "What's happening...?";
-        instructionsEl.classList.remove('hidden');
-        gameState.motionHintShown = true;
-    }
-  } else {
-    gameState.upwardForce = 0;
+  if (gameState.current === 'playing') {
+      if (e.beta < -75) {
+        gameState.upwardForce = 0.1;
+        if (cubes.length === 1 && !gameState.motionHintShown) {
+            instructionsEl.textContent = "What's happening...?";
+            instructionsEl.classList.remove('hidden');
+            gameState.motionHintShown = true;
+        }
+      } else {
+        gameState.upwardForce = 0;
+      }
+  } else if (gameState.current === 'won' && e.beta > 0) {
+      gameState.current = 'smashing';
   }
 }
 
@@ -391,10 +430,8 @@ titleScreenEl.addEventListener('pointerdown', handleTitleTap, { once: true });
 canvas.addEventListener('pointerdown', handlePointerDown);
 window.addEventListener('pointermove', handlePointerMove);
 window.addEventListener('pointerup', handlePointerUp);
-resetButton.addEventListener('click', setupGame);
 
 function handleTitleTap() {
-    // Request permission for device orientation on user interaction
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
         DeviceOrientationEvent.requestPermission()
             .then(permissionState => {
@@ -405,7 +442,6 @@ function handleTitleTap() {
             .catch(console.error)
             .finally(startTransition);
     } else {
-        // For browsers that don't require permission
         window.addEventListener('deviceorientation', handleDeviceOrientation);
         startTransition();
     }

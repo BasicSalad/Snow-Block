@@ -80,8 +80,8 @@ html, body {
   transition: opacity 0.5s ease;
 }
 
-#win-message, #reset-button {
-    pointer-events: all; /* Make these elements clickable */
+#win-message, #final-message {
+    pointer-events: all; /* Make these elements clickable if needed */
 }
 
 #win-message {
@@ -90,24 +90,27 @@ html, body {
     color: #fff;
     text-shadow: 0 0 15px rgba(255, 255, 255, 0.7);
     transform: rotate(180deg);
+    display: flex;
+    white-space: pre;
 }
 
-#reset-button {
-    margin-top: 20px;
-    padding: 12px 24px;
-    font-size: 1rem;
-    background-color: transparent;
-    color: #fff;
-    border: 2px solid #fff;
-    border-radius: 5px;
-    cursor: pointer;
-    transition: background-color 0.3s, color 0.3s;
+#win-message span {
+    display: inline-block;
+    transition: transform 1s ease-out, opacity 1s ease-out;
 }
 
-#reset-button:hover {
-    background-color: #fff;
-    color: #000;
+#win-message span.shattered {
+    opacity: 0;
 }
+
+
+#final-message {
+    font-size: 1.5rem;
+    color: rgba(255, 255, 255, 0.8);
+    opacity: 0;
+    transition: opacity 1s ease-in;
+}
+
 
 .hidden {
   display: none !important;
