@@ -29,8 +29,21 @@ const transitionState = {
     cubes: [],
 };
 
+const titleState = {
+    rotationX: 0.5,
+    rotationY: -0.3,
+    letterMeshes: {},
+};
+
 let cubes = [];
+let textShards = [];
 let animationFrameId;
+let winMessageFontSize = 40; // default
+
+
+// --- AUDIO ---
+let audioContext;
+let dragSoundNode = null;
 
 
 // --- GAME CONFIG & PHYSICS ---
@@ -47,6 +60,7 @@ const WIN_ZONE_HEIGHT = 50;
 const NUM_SHARDS = 8;
 
 // --- 3D RENDERING DATA ---
+// Basic unit cube, used for non-title screen rendering
 const UNIT_CUBE_VERTICES = [
   { x: -1, y: -1, z: -1 }, { x: 1, y: -1, z: -1 },
   { x: 1, y: 1, z: -1 }, { x: -1, y: 1, z: -1 },
@@ -57,8 +71,19 @@ const CUBE_EDGES = [
   [0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6],
   [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]
 ];
-
 const projectedVertices = Array.from({ length: 8 }, () => ({ x: 0, y: 0 }));
+
+const letterShapes = {
+    'S': { path: [[0, 0], [4, 0], [4, 1], [1, 1], [1, 2], [3, 2], [3, 3], [4, 3], [4, 5], [0, 5], [0, 4], [3, 4], [3, 3], [1, 3], [1, 4], [0, 4]] },
+    'N': { path: [[0, 0], [1, 0], [1, 3], [3, 0], [4, 0], [4, 5], [3, 5], [3, 2], [1, 5], [0, 5]] },
+    'O': { path: [[0, 0], [4, 0], [4, 5], [0, 5]], holes: [[[1, 1], [3, 1], [3, 4], [1, 4]]] },
+    'W': { path: [[0, 0], [1, 0], [2, 3], [3, 0], [4, 0], [4, 5], [3, 5], [3, 2], [2, 5], [1, 2], [1, 5], [0, 5]] },
+    'B': { path: [[0, 0], [3, 0], [4, 1], [4, 2], [3, 2.5], [4, 3], [4, 4], [3, 5], [0, 5]], holes: [[[1, 1], [2, 1], [2, 2], [1, 2]], [[1, 3], [2, 3], [2, 4], [1, 4]]] },
+    'L': { path: [[0, 0], [1, 0], [1, 4], [4, 4], [4, 5], [0, 5]] },
+    'C': { path: [[4, 0], [0, 0], [0, 5], [4, 5], [4, 4], [1, 4], [1, 1], [4, 1]] },
+    'K': { path: [[0, 0], [1, 0], [1, 2], [3, 0], [4, 0], [2, 2.5], [4, 5], [3, 5], [1, 3], [1, 5], [0, 5]] },
+};
+
 
 // --- SETUP & STATE MANAGEMENT ---
 function setup() {
@@ -66,7 +91,12 @@ function setup() {
   canvas.height = window.innerHeight;
   trailCanvas.width = canvas.width;
   trailCanvas.height = canvas.height;
+  winMessageFontSize = 2.5 * parseFloat(getComputedStyle(document.documentElement).fontSize);
 
+  // Pre-generate letter meshes
+  for (const char in letterShapes) {
+      titleState.letterMeshes[char] = extrudeShape(letterShapes[char]);
+  }
 
   gameState.current = 'title';
   titleScreenEl.style.display = 'flex';
@@ -92,6 +122,7 @@ function setupGame() {
     vRx: 0, vRy: 0,
   };
   cubes = [startCube];
+  textShards = [];
   trailCtx.clearRect(0, 0, trailCanvas.width, trailCanvas.height);
 
   Object.assign(gameState, {
@@ -104,9 +135,7 @@ function setupGame() {
   instructionsEl.textContent = '';
   instructionsEl.classList.add('hidden');
   
-  // Reset letter styles
   Array.from(winMessageEl.children).forEach(span => {
-    span.classList.remove('shattered');
     span.style.transform = '';
   });
 }
@@ -134,10 +163,11 @@ function startTransition() {
 
 
 // --- GAME LOOP ---
-function gameLoop(timestamp) {
+function gameLoop() {
   switch(gameState.current) {
     case 'title':
-        break;
+      drawTitle();
+      break;
     case 'transitioning':
       updateTransition();
       drawTransition();
@@ -151,6 +181,7 @@ function gameLoop(timestamp) {
   }
   animationFrameId = requestAnimationFrame(gameLoop);
 }
+
 
 // --- TRANSITION LOGIC ---
 function updateTransition() {
@@ -179,7 +210,7 @@ function drawTransition() {
 
 // --- GAME LOGIC ---
 function updateGame() {
-  if (gameState.current === 'won') return;
+  if (gameState.current === 'won' && cubes.length <= 1) return;
 
   cubes.forEach((cube, index) => {
     const prevX = cube.x;
@@ -189,7 +220,7 @@ function updateGame() {
         cube.vy -= gameState.upwardForce;
     }
     
-    if (gameState.current === 'smashing') {
+    if (gameState.current === 'smashing' || cubes.length > 1) {
         cube.vy += physics.gravity;
     }
 
@@ -204,7 +235,7 @@ function updateGame() {
 
     const halfSize = cube.size / 2;
     if (cube.y > canvas.height - halfSize) { cube.y = canvas.height - halfSize; cube.vy *= physics.bounce; }
-    if (cube.y < halfSize && gameState.current !== 'smashing') { cube.y = halfSize; cube.vy *= physics.bounce; }
+    if (cube.y < halfSize && gameState.current !== 'smashing' && cubes.length <= 1) { cube.y = halfSize; cube.vy *= physics.bounce; }
     if (cube.x < halfSize) { cube.x = halfSize; cube.vx *= physics.bounce; }
     if (cube.x > canvas.width - halfSize) { cube.x = canvas.width - halfSize; cube.vx *= physics.bounce; }
     
@@ -212,6 +243,16 @@ function updateGame() {
         drawTrailSegment(prevX, prevY, cube.x, cube.y, cube.size);
     }
   });
+
+  textShards.forEach(shard => {
+    shard.vy += physics.gravity; // Apply gravity
+    shard.vx *= 0.99; // Air resistance
+    shard.x += shard.vx;
+    shard.y += shard.vy;
+    shard.rotation += shard.vR;
+    shard.vR *= 0.99; // Rotational damping
+  });
+  textShards = textShards.filter(shard => shard.y < canvas.height + 50);
 
   const mainCube = cubes[0];
   if (cubes.length === 1 && mainCube) {
@@ -242,9 +283,25 @@ function drawGame() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(trailCanvas, 0, 0);
   cubes.forEach(c => drawWireframeObject(c, UNIT_CUBE_VERTICES, CUBE_EDGES, projectedVertices));
+
+  if (textShards.length > 0) {
+      ctx.font = `bold ${winMessageFontSize}px 'Helvetica Neue', Arial, sans-serif`;
+      ctx.fillStyle = '#FFFFFF';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      textShards.forEach(shard => {
+          ctx.save();
+          ctx.translate(shard.x, shard.y);
+          ctx.rotate(shard.rotation);
+          ctx.fillText(shard.text, 0, 0);
+          ctx.restore();
+      });
+  }
 }
 
-// --- RENDERING ---
+// --- 3D RENDERING ---
+
 function drawWireframeObject(obj, vertices, edges, projectionBuffer) {
   ctx.save();
   ctx.translate(obj.x, obj.y);
@@ -288,7 +345,7 @@ function drawTrailSegment(x1, y1, x2, y2, size) {
     const p1_start = { x: x1 + px * offset, y: y1 + py * offset };
     const p1_end = { x: x2 + px * offset, y: y2 + py * offset };
     const p2_start = { x: x1 - px * offset, y: y1 - py * offset };
-    const p2_end = { x: x2 - px * offset, y: y2 - py * offset };
+    const p2_end = { x: x2 - px * offset, y: y2 + py * offset };
 
     trailCtx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
     trailCtx.lineWidth = 2;
@@ -310,9 +367,127 @@ function drawTrailSegment(x1, y1, x2, y2, size) {
     trailCtx.stroke();
 }
 
+// --- TITLE SCREEN 3D RENDERING ---
+
+function extrudeShape(shapeDef) {
+    const { path, holes = [] } = shapeDef;
+    const vertices = [];
+    const faces = [];
+    const depth = 1;
+
+    // Create front and back vertices
+    [...path, ...holes.flat()].forEach(p => {
+        vertices.push({ x: p[0] - 2, y: p[1] - 2.5, z: -depth / 2 }); // Front
+        vertices.push({ x: p[0] - 2, y: p[1] - 2.5, z: depth / 2 });  // Back
+    });
+
+    // Create front and back faces
+    function createFaces(pointPath, offset) {
+        const frontFace = [], backFace = [];
+        for (let i = 0; i < pointPath.length; i++) {
+            frontFace.push(offset + i * 2);
+            backFace.push(offset + i * 2 + 1);
+        }
+        faces.push({ vertices: frontFace, color: '#FFFFFF', type: 'front' });
+        faces.push({ vertices: backFace.reverse(), color: '#000000', type: 'back' });
+
+        // Create side faces
+        for (let i = 0; i < pointPath.length; i++) {
+            const p1 = offset + i * 2;
+            const p2 = offset + ((i + 1) % pointPath.length) * 2;
+            faces.push({ vertices: [p1, p2, p2 + 1, p1 + 1], color: '#000000', type: 'side' });
+        }
+    }
+    
+    createFaces(path, 0);
+    let offset = path.length * 2;
+    holes.forEach(holePath => {
+        createFaces(holePath, offset);
+        offset += holePath.length * 2;
+    });
+
+    return { vertices, faces };
+}
+
+function draw3DObject(mesh, x, y, size, rotX, rotY) {
+    const { vertices, faces } = mesh;
+    const sX = Math.sin(rotX); const cX = Math.cos(rotX);
+    const sY = Math.sin(rotY); const cY = Math.cos(rotY);
+    const perspective = 500;
+
+    const projected = vertices.map(v => {
+        const rotX_y = v.y * cX - v.z * sX;
+        const rotX_z = v.y * sX + v.z * cX;
+        const rotY_x = v.x * cY + rotX_z * sY;
+        const rotY_z = -v.x * sY + rotX_z * cY;
+        const scale = perspective / (perspective - rotY_z * size);
+        return {
+            x: x + rotY_x * size * scale,
+            y: y + rotX_y * size * scale,
+            z: rotY_z,
+        };
+    });
+
+    faces.forEach(face => {
+        face.avgZ = face.vertices.reduce((sum, i) => sum + projected[i].z, 0) / face.vertices.length;
+    });
+
+    faces.sort((a, b) => a.avgZ - b.avgZ);
+
+    faces.forEach(face => {
+        ctx.beginPath();
+        const first = projected[face.vertices[0]];
+        ctx.moveTo(first.x, first.y);
+        for (let i = 1; i < face.vertices.length; i++) {
+            const p = projected[face.vertices[i]];
+            ctx.lineTo(p.x, p.y);
+        }
+        ctx.closePath();
+
+        ctx.fillStyle = face.color;
+        ctx.fill();
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+    });
+}
+
+function drawTitle() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const line1 = "SNOW";
+    const line2 = "BLOCK";
+    const totalLetters = line1.length + line2.length;
+    
+    const scale = Math.min(canvas.width / (totalLetters * 3), canvas.height / 15);
+    const charWidth = scale * 4.5;
+    const lineHeight = scale * 6;
+
+    const drawLine = (text, yOffset) => {
+        const totalWidth = text.length * charWidth;
+        let currentX = canvas.width / 2 - totalWidth / 2 + charWidth / 2;
+        for (const char of text) {
+            const mesh = titleState.letterMeshes[char];
+            if (mesh) {
+                draw3DObject(mesh, currentX, yOffset, scale, titleState.rotationX, titleState.rotationY);
+            }
+            currentX += charWidth;
+        }
+    };
+    
+    drawLine(line1, canvas.height / 2 - lineHeight / 2);
+    drawLine(line2, canvas.height / 2 + lineHeight / 2);
+
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    ctx.font = '16px "Helvetica Neue", Arial, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Tap to begin', canvas.width / 2, canvas.height / 2 + lineHeight * 1.5);
+}
+
+
 
 // --- ACTIONS ---
 function shatterCube(parentCube) {
+    playShatterSound(audioContext);
     const shards = [];
     for (let i = 0; i < NUM_SHARDS; i++) {
         const angle = (Math.PI * 2 / NUM_SHARDS) * i;
@@ -328,12 +503,20 @@ function shatterCube(parentCube) {
 }
 
 function shatterText() {
+    playShatterSound(audioContext);
+    winMessageEl.classList.add('hidden');
     Array.from(winMessageEl.children).forEach(span => {
-        const x = (Math.random() - 0.5) * 100;
-        const y = Math.random() * 150 + 50;
-        const rot = (Math.random() - 0.5) * 360;
-        span.style.transform = `translate(${x}px, ${y}px) rotate(${rot}deg)`;
-        span.classList.add('shattered');
+        if (span.textContent.trim() === '') return;
+        const rect = span.getBoundingClientRect();
+        textShards.push({
+            text: span.textContent,
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+            vx: (Math.random() - 0.5) * 8,
+            vy: (Math.random() - 0.5) * 10 - 5,
+            rotation: 0,
+            vR: (Math.random() - 0.5) * 0.2,
+        });
     });
 }
 
@@ -343,6 +526,7 @@ function winGame() {
     winMessageEl.classList.remove('hidden');
     instructionsEl.classList.add('hidden');
     cubes.forEach(cube => { cube.vx = cube.vy = cube.vRx = cube.vRy = 0; });
+    playWinSound(audioContext);
 }
 
 function showTemporaryMessageAndReset(message, action) {
@@ -367,6 +551,7 @@ function handlePointerDown(e) {
   gameState.lastPointerY = e.clientY;
   mainCube.vx = mainCube.vy = mainCube.vRx = mainCube.vRy = 0;
   canvas.style.cursor = 'grabbing';
+  startDragSound(audioContext);
 }
 
 function handlePointerMove(e) {
@@ -403,6 +588,7 @@ function handlePointerMove(e) {
 function handlePointerUp() {
   gameState.isDragging = false;
   canvas.style.cursor = 'grab';
+  stopDragSound();
 }
 
 function handleDeviceOrientation(e) {
@@ -419,10 +605,80 @@ function handleDeviceOrientation(e) {
       } else {
         gameState.upwardForce = 0;
       }
-  } else if (gameState.current === 'won' && e.beta > 0) {
+  } else if (gameState.current === 'won' && e.beta > 0 && cubes.length === 1) {
       gameState.current = 'smashing';
   }
 }
+
+// --- SOUND SYNTHESIS ---
+function playShatterSound(context) {
+    if (!context) return;
+    const duration = 0.5;
+    const sampleRate = context.sampleRate;
+    const buffer = context.createBuffer(1, sampleRate * duration, sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < data.length; i++) {
+        data[i] = Math.random() * 2 - 1; // White noise
+    }
+    
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    
+    const gain = context.createGain();
+    gain.gain.setValueAtTime(0.3, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + duration);
+
+    source.connect(gain);
+    gain.connect(context.destination);
+    source.start();
+}
+
+function playWinSound(context) {
+    if (!context) return;
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+    osc.connect(gain);
+    gain.connect(context.destination);
+
+    const now = context.currentTime;
+    osc.type = 'triangle';
+    gain.gain.setValueAtTime(0.3, now);
+    
+    // Ascending arpeggio
+    osc.frequency.setValueAtTime(440, now);
+    osc.frequency.setValueAtTime(554.37, now + 0.1);
+    osc.frequency.setValueAtTime(659.25, now + 0.2);
+    osc.frequency.setValueAtTime(880, now + 0.3);
+
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+    osc.start(now);
+    osc.stop(now + 0.5);
+}
+
+function startDragSound(context) {
+    if (!context || dragSoundNode) return;
+    const osc = context.createOscillator();
+    const gain = context.createGain();
+    osc.connect(gain);
+    gain.connect(context.destination);
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(80, context.currentTime); // Low hum
+    gain.gain.setValueAtTime(0, context.currentTime);
+    gain.gain.linearRampToValueAtTime(0.05, context.currentTime + 0.1); // Fade in
+
+    osc.start();
+    dragSoundNode = { osc, gain };
+}
+
+function stopDragSound() {
+    if (!dragSoundNode || !audioContext) return;
+    const now = audioContext.currentTime;
+    dragSoundNode.gain.gain.linearRampToValueAtTime(0, now + 0.2); // Fade out
+    dragSoundNode.osc.stop(now + 0.2);
+    dragSoundNode = null;
+}
+
 
 // --- INITIALIZATION ---
 window.addEventListener('resize', setup);
@@ -432,6 +688,10 @@ window.addEventListener('pointermove', handlePointerMove);
 window.addEventListener('pointerup', handlePointerUp);
 
 function handleTitleTap() {
+    if (!audioContext) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
+
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
         DeviceOrientationEvent.requestPermission()
             .then(permissionState => {
