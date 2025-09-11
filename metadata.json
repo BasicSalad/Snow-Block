@@ -1,0 +1,5 @@
+{
+  "name": "Snow Block",
+  "description": "A small physics game where the only way to win is to change your perspective.",
+  "requestFramePermissions": []
+}
