@@ -11,6 +11,8 @@ const titleScreenEl = document.getElementById('title-screen');
 const instructionsEl = document.getElementById('instructions');
 const winMessageEl = document.getElementById('win-message');
 const resetButton = document.getElementById('reset-button');
+const trailCanvas = document.createElement('canvas');
+const trailCtx = trailCanvas.getContext('2d');
 
 
 // --- GAME STATE ---
@@ -22,12 +24,6 @@ const gameState = {
     totalDistancePushed: 0,
     hasWon: false,
     upwardForce: 0,
-};
-
-const titleState = {
-    rotationX: 0.2,
-    rotationY: 0,
-    vRy: 0.0005, // Slow spin
 };
 
 const transitionState = {
@@ -62,52 +58,18 @@ const CUBE_EDGES = [
   [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]
 ];
 
-// prettier-ignore
-const LETTER_GEOMETRY = {
-    S: {
-        vertices: [{x:-1,y:1,z:0},{x:1,y:1,z:0},{x:-1,y:0,z:0},{x:1,y:0,z:0},{x:-1,y:-1,z:0},{x:1,y:-1,z:0}],
-        edges: [[0,1],[0,2],[2,3],[3,5],[4,5]]
-    },
-    N: {
-        vertices: [{x:-1,y:1,z:0},{x:-1,y:-1,z:0},{x:1,y:1,z:0},{x:1,y:-1,z:0}],
-        edges: [[0,1],[0,3],[2,3]]
-    },
-    O: {
-        vertices: [{x:-1,y:1,z:0},{x:1,y:1,z:0},{x:-1,y:-1,z:0},{x:1,y:-1,z:0}],
-        edges: [[0,1],[1,3],[3,2],[2,0]]
-    },
-    W: {
-        vertices: [{x:-1,y:1,z:0},{x:-0.5,y:-1,z:0},{x:0,y:0,z:0},{x:0.5,y:-1,z:0},{x:1,y:1,z:0}],
-        edges: [[0,1],[1,2],[2,3],[3,4]]
-    },
-    B: {
-        vertices: [{x:-0.8,y:1,z:0},{x:0.8,y:0.8,z:0},{x:0.8,y:0,z:0},{x:-0.8,y:0,z:0},{x:0.8,y:-0.8,z:0},{x:-0.8,y:-1,z:0}],
-        edges: [[0,1],[1,2],[2,3],[0,3],[2,4],[4,5],[5,3]]
-    },
-    L: {
-        vertices: [{x:-1,y:1,z:0},{x:-1,y:-1,z:0},{x:1,y:-1,z:0}],
-        edges: [[0,1],[1,2]]
-    },
-    C: {
-        vertices: [{x:1,y:1,z:0},{x:-1,y:1,z:0},{x:-1,y:-1,z:0},{x:1,y:-1,z:0}],
-        edges: [[0,1],[1,2],[2,3]]
-    },
-    K: {
-        vertices: [{x:-1,y:1,z:0},{x:-1,y:-1,z:0},{x:-1,y:0,z:0},{x:1,y:1,z:0},{x:1,y:-1,z:0}],
-        edges: [[0,1],[2,3],[2,4]]
-    }
-};
-
 const projectedVertices = Array.from({ length: 8 }, () => ({ x: 0, y: 0 }));
-const projectedLetterVertices = Array.from({ length: 8 }, () => ({ x: 0, y: 0 }));
 
 // --- SETUP & STATE MANAGEMENT ---
 function setup() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+  trailCanvas.width = canvas.width;
+  trailCanvas.height = canvas.height;
+
 
   gameState.current = 'title';
-  titleScreenEl.style.display = 'block';
+  titleScreenEl.style.display = 'flex';
   titleScreenEl.style.opacity = '1';
 
   if (animationFrameId) {
@@ -117,15 +79,20 @@ function setup() {
 }
 
 function setupGame() {
+  const startX = canvas.width / 2;
+  const startY = canvas.height - START_SIZE * 1.5;
   const startCube = {
     size: START_SIZE,
-    y: canvas.height - START_SIZE * 1.5,
-    x: canvas.width / 2,
+    y: startY,
+    x: startX,
+    prevX: startX,
+    prevY: startY,
     mass: 1, vx: 0, vy: 0,
     rotationX: 0, rotationY: 0.4,
     vRx: 0, vRy: 0,
   };
   cubes = [startCube];
+  trailCtx.clearRect(0, 0, trailCanvas.width, trailCanvas.height);
 
   Object.assign(gameState, {
       totalDistancePushed: 0, upwardForce: 0,
@@ -139,24 +106,41 @@ function setupGame() {
 }
 
 function startTransition() {
-  gameState.current = 'transitioning';
-  titleScreenEl.style.opacity = '0';
-  setTimeout(() => { titleScreenEl.style.display = 'none'; }, 500);
+    // Request permission for device orientation on user interaction
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+            .then(permissionState => {
+                if (permissionState === 'granted') {
+                    window.addEventListener('deviceorientation', handleDeviceOrientation);
+                }
+            })
+            .catch(console.error)
+            .finally(proceedWithTransition);
+    } else {
+        window.addEventListener('deviceorientation', handleDeviceOrientation);
+        proceedWithTransition();
+    }
+}
 
-  transitionState.cubes = [];
-  const numCubes = 200;
-  for (let i = 0; i < numCubes; i++) {
-    transitionState.cubes.push({
-      x: Math.random() * canvas.width,
-      y: -(Math.random() * canvas.height), // Start staggered above the screen
-      size: 10 + Math.random() * 20,
-      rotationX: Math.random() * Math.PI * 2,
-      rotationY: Math.random() * Math.PI * 2,
-      vRx: (Math.random() - 0.5) * 0.05,
-      vRy: (Math.random() - 0.5) * 0.05,
-      speed: 5 + Math.random() * 10,
-    });
-  }
+function proceedWithTransition() {
+    gameState.current = 'transitioning';
+    titleScreenEl.style.opacity = '0';
+    setTimeout(() => { titleScreenEl.style.display = 'none'; }, 500);
+
+    transitionState.cubes = [];
+    const numCubes = 200;
+    for (let i = 0; i < numCubes; i++) {
+        transitionState.cubes.push({
+            x: Math.random() * canvas.width,
+            y: -(Math.random() * canvas.height), // Start staggered above the screen
+            size: 10 + Math.random() * 20,
+            rotationX: Math.random() * Math.PI * 2,
+            rotationY: Math.random() * Math.PI * 2,
+            vRx: (Math.random() - 0.5) * 0.05,
+            vRy: (Math.random() - 0.5) * 0.05,
+            speed: 5 + Math.random() * 10,
+        });
+    }
 }
 
 
@@ -164,8 +148,7 @@ function startTransition() {
 function gameLoop(timestamp) {
   switch(gameState.current) {
     case 'title':
-        updateTitle();
-        drawTitle();
+        // The title screen is now handled by HTML/CSS, so this is intentionally empty.
         break;
     case 'transitioning':
       updateTransition();
@@ -178,50 +161,6 @@ function gameLoop(timestamp) {
   }
   animationFrameId = requestAnimationFrame(gameLoop);
 }
-
-// --- TITLE LOGIC ---
-function updateTitle() {
-    titleState.rotationY += titleState.vRy;
-}
-
-function drawTitle() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    const scale = Math.min(canvas.width / 10, 80);
-    const letterSpacing = scale * 2.5;
-    const lineSpacing = scale * 2.5;
-
-    const words = ["SNOW", "BLOCK"];
-    const totalHeight = (words.length - 1) * lineSpacing;
-    let currentY = canvas.height / 2 - totalHeight / 2;
-    
-    words.forEach(word => {
-        const totalWidth = (word.length - 1) * letterSpacing;
-        let currentX = canvas.width / 2 - totalWidth / 2;
-
-        for (const char of word) {
-            if (LETTER_GEOMETRY[char]) {
-                const letter = {
-                    x: currentX, y: currentY,
-                    size: scale,
-                    rotationX: titleState.rotationX,
-                    rotationY: titleState.rotationY,
-                };
-                const { vertices, edges } = LETTER_GEOMETRY[char];
-                drawWireframeObject(letter, vertices, edges, projectedLetterVertices);
-            }
-            currentX += letterSpacing;
-        }
-        currentY += lineSpacing;
-    });
-
-    // Draw subtitle
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
-    ctx.font = `300 ${Math.min(20, canvas.width/25)}px 'Helvetica Neue', Arial, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillText('Tap to begin', canvas.width / 2, canvas.height / 2 + totalHeight + scale);
-}
-
 
 // --- TRANSITION LOGIC ---
 function updateTransition() {
@@ -253,6 +192,9 @@ function updateGame() {
   if (gameState.hasWon) return;
 
   cubes.forEach((cube, index) => {
+    const prevX = cube.x;
+    const prevY = cube.y;
+
     if (index === 0 && cubes.length === 1) {
         cube.vy -= gameState.upwardForce;
     }
@@ -270,6 +212,11 @@ function updateGame() {
     if (cube.y < halfSize) { cube.y = halfSize; cube.vy *= physics.bounce; }
     if (cube.x < halfSize) { cube.x = halfSize; cube.vx *= physics.bounce; }
     if (cube.x > canvas.width - halfSize) { cube.x = canvas.width - halfSize; cube.vx *= physics.bounce; }
+    
+    const distMoved = Math.hypot(cube.x - prevX, cube.y - prevY);
+    if (gameState.isDragging && distMoved > 1) {
+        drawTrailSegment(prevX, prevY, cube.x, cube.y, cube.size);
+    }
   });
 
   const mainCube = cubes[0];
@@ -282,6 +229,7 @@ function updateGame() {
 
 function drawGame() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(trailCanvas, 0, 0);
   cubes.forEach(c => drawWireframeObject(c, UNIT_CUBE_VERTICES, CUBE_EDGES, projectedVertices));
 }
 
@@ -310,6 +258,48 @@ function drawWireframeObject(obj, vertices, edges, projectionBuffer) {
   });
   ctx.stroke();
   ctx.restore();
+}
+
+function drawTrailSegment(x1, y1, x2, y2, size) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return;
+
+    const nx = dx / len;
+    const ny = dy / len;
+    
+    // Perpendicular vector
+    const px = -ny;
+    const py = nx;
+
+    const offset = size / 2;
+
+    const p1_start = { x: x1 + px * offset, y: y1 + py * offset };
+    const p1_end = { x: x2 + px * offset, y: y2 + py * offset };
+    const p2_start = { x: x1 - px * offset, y: y1 - py * offset };
+    const p2_end = { x: x2 - px * offset, y: y2 - py * offset };
+
+    // Draw shadow
+    trailCtx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+    trailCtx.lineWidth = 2;
+    trailCtx.lineCap = 'round';
+    trailCtx.beginPath();
+    trailCtx.moveTo(p1_start.x + 1, p1_start.y + 1);
+    trailCtx.lineTo(p1_end.x + 1, p1_end.y + 1);
+    trailCtx.moveTo(p2_start.x + 1, p2_start.y + 1);
+    trailCtx.lineTo(p2_end.x + 1, p2_end.y + 1);
+    trailCtx.stroke();
+    
+    // Draw main lines
+    trailCtx.strokeStyle = '#FFFFFF';
+    trailCtx.lineWidth = 1.5;
+    trailCtx.beginPath();
+    trailCtx.moveTo(p1_start.x, p1_start.y);
+    trailCtx.lineTo(p1_end.x, p1_end.y);
+    trailCtx.moveTo(p2_start.x, p2_start.y);
+    trailCtx.lineTo(p2_end.x, p2_end.y);
+    trailCtx.stroke();
 }
 
 
@@ -378,8 +368,10 @@ function handlePointerMove(e) {
       mainCube.mass = Math.pow(maxSize / START_SIZE, 3);
   }
   
-  mainCube.vx -= (deltaX * physics.pushMultiplier) / mainCube.mass;
-  mainCube.vy -= (deltaY * physics.pushMultiplier) / mainCube.mass;
+  mainCube.vx += (deltaX * physics.pushMultiplier) / mainCube.mass;
+  mainCube.vy += (deltaY * physics.pushMultiplier) / mainCube.mass;
+  
+  // Inverted rotation for the "rolling under finger" feel
   mainCube.vRx -= (deltaY * 0.001) / mainCube.mass;
   mainCube.vRy += (deltaX * 0.001) / mainCube.mass;
   
@@ -394,11 +386,13 @@ function handlePointerUp() {
 
 function handleDeviceOrientation(e) {
   if (gameState.current !== 'playing' || gameState.hasWon || e.beta === null) return;
+  let hintShown = false;
   if (e.beta > 150 || e.beta < -150) {
     gameState.upwardForce = 0.1;
-    if (cubes.length === 1) {
+    if (cubes.length === 1 && !hintShown) {
         instructionsEl.textContent = "What's happening...?";
         instructionsEl.classList.remove('hidden');
+        hintShown = true;
     }
   } else {
     gameState.upwardForce = 0;
@@ -407,11 +401,29 @@ function handleDeviceOrientation(e) {
 
 // --- INITIALIZATION ---
 window.addEventListener('resize', setup);
-titleScreenEl.addEventListener('pointerdown', startTransition, { once: true });
+titleScreenEl.addEventListener('pointerdown', handleTitleTap, { once: true });
 canvas.addEventListener('pointerdown', handlePointerDown);
 window.addEventListener('pointermove', handlePointerMove);
 window.addEventListener('pointerup', handlePointerUp);
-window.addEventListener('deviceorientation', handleDeviceOrientation);
 resetButton.addEventListener('click', setupGame);
+
+function handleTitleTap() {
+    // Request permission for device orientation on user interaction
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        DeviceOrientationEvent.requestPermission()
+            .then(permissionState => {
+                if (permissionState === 'granted') {
+                    window.addEventListener('deviceorientation', handleDeviceOrientation);
+                }
+            })
+            .catch(console.error)
+            .finally(startTransition);
+    } else {
+        // For browsers that don't require permission
+        window.addEventListener('deviceorientation', handleDeviceOrientation);
+        startTransition();
+    }
+}
+
 
 setup();
