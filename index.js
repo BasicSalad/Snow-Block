@@ -33,8 +33,8 @@ const transitionState = {
 };
 
 const titleState = {
-    rotationX: 0.5,
-    rotationY: -0.3,
+    rotationX: 0,
+    rotationY: 0,
     letterMeshes: {},
 };
 
@@ -81,11 +81,15 @@ const CUBE_EDGES = [
 ];
 const projectedVertices = Array.from({ length: 8 }, () => ({ x: 0, y: 0 }));
 
+// Path for the letter 'M' in the title font style. 'W' is generated from this.
+const M_PATH = [[0, 0], [1, 0], [1, 3], [2, 0], [3, 3], [3, 0], [4, 0], [4, 5], [3, 5], [2, 2], [1, 5], [0, 5]];
+const FIVE_PATH = [[4, 5], [0, 5], [0, 3], [3, 3], [3, 1], [0, 1], [0, 0], [4, 0], [4, 2], [1, 2], [1, 4], [4, 4]];
+
 const letterShapes = {
-    'S': { path: [[0, 0], [4, 0], [4, 1], [1, 1], [1, 2], [3, 2], [3, 3], [4, 3], [4, 5], [0, 5], [0, 4], [3, 4], [3, 3], [1, 3], [1, 4], [0, 4]] },
+    '5': { path: FIVE_PATH.map(p => [p[0], 5 - p[1]]).reverse() },
     'N': { path: [[0, 0], [1, 0], [1, 3], [3, 0], [4, 0], [4, 5], [3, 5], [3, 2], [1, 5], [0, 5]] },
     'O': { path: [[0, 0], [4, 0], [4, 5], [0, 5]], holes: [[[1, 1], [3, 1], [3, 4], [1, 4]]] },
-    'W': { path: [[0, 0], [1, 0], [2, 3], [3, 0], [4, 0], [4, 5], [3, 5], [3, 2], [2, 5], [1, 2], [1, 5], [0, 5]] },
+    'W': { path: M_PATH },
     'B': { path: [[0, 0], [3, 0], [4, 1], [4, 2], [3, 2.5], [4, 3], [4, 4], [3, 5], [0, 5]], holes: [[[1, 1], [2, 1], [2, 2], [1, 2]], [[1, 3], [2, 3], [2, 4], [1, 4]]] },
     'L': { path: [[0, 0], [1, 0], [1, 4], [4, 4], [4, 5], [0, 5]] },
     'C': { path: [[4, 0], [0, 0], [0, 5], [4, 5], [4, 4], [1, 4], [1, 1], [4, 1]] },
@@ -108,6 +112,8 @@ function setup() {
   for (const char in letterShapes) {
       titleState.letterMeshes[char] = extrudeShape(letterShapes[char]);
   }
+
+  initializeTitleCubes(); // Create the backdrop cubes
 
   gameState.current = 'title';
   titleScreenEl.style.display = 'flex';
@@ -154,25 +160,33 @@ function setupGame() {
   });
 }
 
+function initializeTitleCubes() {
+    transitionState.cubes = [];
+    const numCubes = 150;
+    for (let i = 0; i < numCubes; i++) {
+        const initialX = Math.random() * canvas.width;
+        transitionState.cubes.push({
+            x: initialX,
+            y: Math.random() * canvas.height, // Start randomly on screen
+            size: 5 + Math.random() * 10,
+            rotationX: Math.random() * Math.PI * 2,
+            rotationY: Math.random() * Math.PI * 2,
+            vRx: (Math.random() - 0.5) * 0.02,
+            vRy: (Math.random() - 0.5) * 0.02,
+            speed: 0.5 + Math.random() * 1,
+            initialX: initialX,
+            swayAngle: Math.random() * Math.PI * 2,
+            swayFrequency: 0.01 + Math.random() * 0.01,
+            swayAmplitude: 20 + Math.random() * 40,
+            alpha: 0.4 + Math.random() * 0.6,
+        });
+    }
+}
+
 function startTransition() {
     gameState.current = 'transitioning';
     titleScreenEl.style.opacity = '0';
     setTimeout(() => { titleScreenEl.style.display = 'none'; }, 500);
-
-    transitionState.cubes = [];
-    const numCubes = 200;
-    for (let i = 0; i < numCubes; i++) {
-        transitionState.cubes.push({
-            x: Math.random() * canvas.width,
-            y: -(Math.random() * canvas.height),
-            size: 10 + Math.random() * 20,
-            rotationX: Math.random() * Math.PI * 2,
-            rotationY: Math.random() * Math.PI * 2,
-            vRx: (Math.random() - 0.5) * 0.05,
-            vRy: (Math.random() - 0.5) * 0.05,
-            speed: 5 + Math.random() * 10,
-        });
-    }
 }
 
 
@@ -180,6 +194,8 @@ function startTransition() {
 function gameLoop() {
   switch(gameState.current) {
     case 'title':
+      updateTitleScreenAnimation();
+      drawTransition();
       drawTitle();
       break;
     case 'transitioning':
@@ -198,12 +214,33 @@ function gameLoop() {
 
 
 // --- TRANSITION LOGIC ---
+function updateTitleScreenAnimation() {
+    transitionState.cubes.forEach(cube => {
+        cube.y += cube.speed;
+        cube.rotationX += cube.vRx;
+        cube.rotationY += cube.vRy;
+        cube.swayAngle += cube.swayFrequency;
+        cube.x = cube.initialX + Math.sin(cube.swayAngle) * cube.swayAmplitude;
+
+        // If a cube falls off the bottom, reset it to the top for a continuous loop
+        if (cube.y - cube.size > canvas.height) {
+            cube.y = -cube.size;
+            cube.initialX = Math.random() * canvas.width;
+        }
+    });
+}
+
 function updateTransition() {
   let allCubesOffScreen = true;
   transitionState.cubes.forEach(cube => {
     cube.y += cube.speed;
     cube.rotationX += cube.vRx;
     cube.rotationY += cube.vRy;
+
+    // Add sway logic for snowflake effect
+    cube.swayAngle += cube.swayFrequency;
+    cube.x = cube.initialX + Math.sin(cube.swayAngle) * cube.swayAmplitude;
+
     if (cube.y - cube.size / 2 < canvas.height) {
         allCubesOffScreen = false;
     }
@@ -381,7 +418,8 @@ function drawWireframeObject(obj, vertices, edges, projectionBuffer) {
     projectionBuffer[i] = { x: rotY_x * halfSize, y: rotX_y * halfSize };
   });
 
-  ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2;
+  ctx.strokeStyle = obj.alpha ? `rgba(255, 255, 255, ${obj.alpha})` : '#FFFFFF';
+  ctx.lineWidth = 2;
   ctx.beginPath();
   edges.forEach(edge => {
     const v1 = projectionBuffer[edge[0]];
@@ -439,11 +477,13 @@ function extrudeShape(shapeDef) {
     const vertices = [];
     const faces = [];
     const depth = 1;
+    const shearX = -0.7;
+    const shearY = 0.7;
 
     // Create front and back vertices
     [...path, ...holes.flat()].forEach(p => {
         vertices.push({ x: p[0] - 2, y: p[1] - 2.5, z: -depth / 2 }); // Front
-        vertices.push({ x: p[0] - 2, y: p[1] - 2.5, z: depth / 2 });  // Back
+        vertices.push({ x: p[0] - 2 + shearX, y: p[1] - 2.5 + shearY, z: depth / 2 });  // Back (sheared)
     });
 
     // Create front and back faces
@@ -454,13 +494,13 @@ function extrudeShape(shapeDef) {
             backFace.push(offset + i * 2 + 1);
         }
         faces.push({ vertices: frontFace, color: '#FFFFFF', type: 'front' });
-        faces.push({ vertices: backFace.reverse(), color: '#000000', type: 'back' });
+        faces.push({ vertices: backFace.reverse(), color: '#FFFFFF', type: 'back' });
 
         // Create side faces
         for (let i = 0; i < pointPath.length; i++) {
             const p1 = offset + i * 2;
             const p2 = offset + ((i + 1) % pointPath.length) * 2;
-            faces.push({ vertices: [p1, p2, p2 + 1, p1 + 1], color: '#000000', type: 'side' });
+            faces.push({ vertices: [p1, p2, p2 + 1, p1 + 1], color: '#FFFFFF', type: 'side' });
         }
     }
     
@@ -478,14 +518,13 @@ function draw3DObject(mesh, x, y, size, rotX, rotY) {
     const { vertices, faces } = mesh;
     const sX = Math.sin(rotX); const cX = Math.cos(rotX);
     const sY = Math.sin(rotY); const cY = Math.cos(rotY);
-    const perspective = 500;
 
     const projected = vertices.map(v => {
         const rotX_y = v.y * cX - v.z * sX;
         const rotX_z = v.y * sX + v.z * cX;
         const rotY_x = v.x * cY + rotX_z * sY;
         const rotY_z = -v.x * sY + rotX_z * cY;
-        const scale = perspective / (perspective - rotY_z * size);
+        const scale = 1; // Orthographic projection
         return {
             x: x + rotY_x * size * scale,
             y: y + rotX_y * size * scale,
@@ -518,8 +557,8 @@ function draw3DObject(mesh, x, y, size, rotX, rotY) {
 }
 
 function drawTitle() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const line1 = "SNOW";
+    // No longer clears the canvas, to allow drawing over the backdrop
+    const line1 = "5NOW";
     const line2 = "BLOCK";
     const totalLetters = line1.length + line2.length;
     
