@@ -6,6 +6,8 @@
 // --- DOM ELEMENTS ---
 const canvas = document.getElementById('game-canvas');
 const ctx = canvas.getContext('2d');
+const gameContainerEl = document.getElementById('game-container');
+const titleScreenEl = document.getElementById('title-screen');
 const instructionsEl = document.getElementById('instructions');
 const winMessageEl = document.getElementById('win-message');
 const resetButton = document.getElementById('reset-button');
@@ -13,12 +15,19 @@ const resetButton = document.getElementById('reset-button');
 
 // --- GAME STATE ---
 const gameState = {
+    current: 'title', // 'title', 'transitioning', 'playing'
     isDragging: false,
     lastPointerX: 0,
     lastPointerY: 0,
     totalDistancePushed: 0,
     hasWon: false,
     upwardForce: 0,
+};
+
+const transitionState = {
+    cube: null,
+    startTime: 0,
+    duration: 1000, // ms
 };
 
 let cubes = [];
@@ -37,7 +46,7 @@ const MAX_SIZE_FACTOR = 4;
 const WIN_ZONE_HEIGHT = 50;
 const NUM_SHARDS = 8;
 
-// Pre-calculate cube structure to optimize drawing
+// --- 3D RENDERING DATA ---
 const UNIT_CUBE_VERTICES = [
   { x: -1, y: -1, z: -1 }, { x: 1, y: -1, z: -1 },
   { x: 1, y: 1, z: -1 }, { x: -1, y: 1, z: -1 },
@@ -48,15 +57,26 @@ const CUBE_EDGES = [
   [0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6],
   [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]
 ];
-// Reusable array for projected 2D points to avoid memory allocation in loop
 const projectedVertices = Array.from({ length: 8 }, () => ({ x: 0, y: 0 }));
 
 
-// --- SETUP & RESIZE ---
+// --- SETUP & STATE MANAGEMENT ---
 function setup() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
 
+  gameState.current = 'title';
+  titleScreenEl.style.display = 'flex';
+  titleScreenEl.style.opacity = '1';
+  gameContainerEl.classList.add('hidden');
+
+  if (animationFrameId) {
+    cancelAnimationFrame(animationFrameId);
+  }
+  gameLoop();
+}
+
+function setupGame() {
   const startCube = {
     size: START_SIZE,
     y: canvas.height - START_SIZE * 1.5,
@@ -68,32 +88,73 @@ function setup() {
   cubes = [startCube];
 
   Object.assign(gameState, {
-      totalDistancePushed: 0,
-      upwardForce: 0,
-      hasWon: false,
-      isDragging: false
+      totalDistancePushed: 0, upwardForce: 0,
+      hasWon: false, isDragging: false
   });
-  
+
   winMessageEl.classList.add('hidden');
   resetButton.classList.add('hidden');
   instructionsEl.textContent = '';
   instructionsEl.classList.add('hidden');
-
-  if (animationFrameId) {
-    cancelAnimationFrame(animationFrameId);
-  }
-  gameLoop();
 }
 
+function startTransition() {
+  gameState.current = 'transitioning';
+  titleScreenEl.style.opacity = '0';
+  gameContainerEl.classList.remove('hidden');
+  setTimeout(() => { titleScreenEl.style.display = 'none'; }, 500);
+
+  transitionState.startTime = performance.now();
+  transitionState.cube = {
+    size: 0, x: canvas.width / 2, y: canvas.height / 2,
+    rotationX: Math.random() * Math.PI, rotationY: Math.random() * Math.PI,
+  };
+}
+
+
 // --- GAME LOOP ---
-function gameLoop() {
-  update();
-  draw();
+function gameLoop(timestamp) {
+  switch(gameState.current) {
+    case 'transitioning':
+      updateTransition(timestamp);
+      drawTransition();
+      break;
+    case 'playing':
+      updateGame();
+      drawGame();
+      break;
+  }
   animationFrameId = requestAnimationFrame(gameLoop);
 }
 
-// --- UPDATE LOGIC ---
-function update() {
+
+// --- TRANSITION LOGIC ---
+function updateTransition(timestamp) {
+  const elapsed = timestamp - transitionState.startTime;
+  const progress = Math.min(elapsed / transitionState.duration, 1);
+  const easedProgress = 1 - Math.pow(1 - progress, 3); // easeOutCubic
+
+  const diagonal = Math.sqrt(canvas.width**2 + canvas.height**2);
+  transitionState.cube.size = easedProgress * (diagonal * 1.1);
+  transitionState.cube.rotationX += 0.01;
+  transitionState.cube.rotationY += 0.01;
+
+  if (progress >= 1) {
+    gameState.current = 'playing';
+    setupGame();
+  }
+}
+
+function drawTransition() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (transitionState.cube) {
+    drawCube(transitionState.cube);
+  }
+}
+
+
+// --- GAME LOGIC ---
+function updateGame() {
   if (gameState.hasWon) return;
 
   cubes.forEach((cube, index) => {
@@ -124,50 +185,36 @@ function update() {
   }
 }
 
-// --- DRAWING LOGIC ---
-function draw() {
+function drawGame() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  
-  cubes.forEach(cube => {
-      ctx.save();
-      ctx.translate(cube.x, cube.y);
-
-      const halfSize = cube.size / 2;
-      const sX = Math.sin(cube.rotationX);
-      const cX = Math.cos(cube.rotationX);
-      const sY = Math.sin(cube.rotationY);
-      const cY = Math.cos(cube.rotationY);
-
-      // Project 3D points to 2D screen space
-      UNIT_CUBE_VERTICES.forEach((v, i) => {
-          const scaledX = v.x * halfSize;
-          const scaledY = v.y * halfSize;
-          const scaledZ = v.z * halfSize;
-
-          const rotX_y = scaledY * cX - scaledZ * sX;
-          const rotX_z = scaledY * sX + scaledZ * cX;
-          
-          const rotZ_x = scaledX * cY - rotX_y * sY;
-          const rotZ_y = scaledX * sY + rotX_y * cY;
-        
-          projectedVertices[i] = { x: rotZ_x, y: rotZ_y };
-      });
-      
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      CUBE_EDGES.forEach(edge => {
-          const v1 = projectedVertices[edge[0]];
-          const v2 = projectedVertices[edge[1]];
-          ctx.moveTo(v1.x, v1.y);
-          ctx.lineTo(v2.x, v2.y);
-      });
-      ctx.stroke();
-
-      ctx.restore();
-  });
+  cubes.forEach(drawCube);
 }
 
+function drawCube(cube) {
+  ctx.save();
+  ctx.translate(cube.x, cube.y);
+
+  const halfSize = cube.size / 2;
+  const sX = Math.sin(cube.rotationX); const cX = Math.cos(cube.rotationX);
+  const sY = Math.sin(cube.rotationY); const cY = Math.cos(cube.rotationY);
+
+  UNIT_CUBE_VERTICES.forEach((v, i) => {
+    const rotX_y = v.y * cX - v.z * sX; const rotX_z = v.y * sX + v.z * cX;
+    const rotY_x = v.x * cY + rotX_z * sY; const rotY_z = v.x * -sY + rotX_z * cY;
+    projectedVertices[i] = { x: rotY_x * halfSize, y: rotX_y * halfSize };
+  });
+
+  ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  CUBE_EDGES.forEach(edge => {
+    const v1 = projectedVertices[edge[0]];
+    const v2 = projectedVertices[edge[1]];
+    ctx.moveTo(v1.x, v1.y);
+    ctx.lineTo(v2.x, v2.y);
+  });
+  ctx.stroke();
+  ctx.restore();
+}
 
 // --- ACTIONS ---
 function shatterCube(parentCube) {
@@ -197,16 +244,15 @@ function winGame() {
 function showTemporaryMessageAndReset(message) {
     instructionsEl.textContent = message;
     instructionsEl.classList.remove('hidden');
-    setTimeout(setup, 2000);
+    setTimeout(setupGame, 2000);
 }
 
 
 // --- EVENT HANDLERS ---
 function handlePointerDown(e) {
-  if (cubes.length > 1 || gameState.hasWon) return;
+  if (gameState.current !== 'playing' || cubes.length > 1 || gameState.hasWon) return;
   const mainCube = cubes[0];
   if (!mainCube) return;
-
   gameState.isDragging = true;
   gameState.lastPointerX = e.clientX;
   gameState.lastPointerY = e.clientY;
@@ -215,7 +261,7 @@ function handlePointerDown(e) {
 }
 
 function handlePointerMove(e) {
-  if (!gameState.isDragging || gameState.hasWon || cubes.length > 1) return;
+  if (!gameState.isDragging || gameState.current !== 'playing' || gameState.hasWon || cubes.length > 1) return;
   const mainCube = cubes[0];
   if (!mainCube) return;
 
@@ -223,7 +269,6 @@ function handlePointerMove(e) {
   const deltaY = e.clientY - gameState.lastPointerY;
 
   gameState.totalDistancePushed += Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-
   const growthFactor = 1 + (gameState.totalDistancePushed / (canvas.height * 2)) * 1.5;
   const newSize = START_SIZE * growthFactor;
   const maxSize = canvas.width / MAX_SIZE_FACTOR;
@@ -251,7 +296,7 @@ function handlePointerUp() {
 }
 
 function handleDeviceOrientation(e) {
-  if (gameState.hasWon || e.beta === null) return;
+  if (gameState.current !== 'playing' || gameState.hasWon || e.beta === null) return;
   if (e.beta > 150 || e.beta < -150) {
     gameState.upwardForce = 0.1;
     if (cubes.length === 1) {
@@ -265,10 +310,11 @@ function handleDeviceOrientation(e) {
 
 // --- INITIALIZATION ---
 window.addEventListener('resize', setup);
+titleScreenEl.addEventListener('pointerdown', startTransition, { once: true });
 canvas.addEventListener('pointerdown', handlePointerDown);
 window.addEventListener('pointermove', handlePointerMove);
 window.addEventListener('pointerup', handlePointerUp);
 window.addEventListener('deviceorientation', handleDeviceOrientation);
-resetButton.addEventListener('click', setup);
+resetButton.addEventListener('click', setupGame);
 
 setup();
