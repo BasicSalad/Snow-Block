@@ -24,6 +24,7 @@ const gameState = {
     totalDistancePushed: 0,
     hasWon: false,
     upwardForce: 0,
+    motionHintShown: false,
 };
 
 const transitionState = {
@@ -96,7 +97,7 @@ function setupGame() {
 
   Object.assign(gameState, {
       totalDistancePushed: 0, upwardForce: 0,
-      hasWon: false, isDragging: false
+      hasWon: false, isDragging: false, motionHintShown: false,
   });
 
   winMessageEl.classList.add('hidden');
@@ -106,23 +107,6 @@ function setupGame() {
 }
 
 function startTransition() {
-    // Request permission for device orientation on user interaction
-    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        DeviceOrientationEvent.requestPermission()
-            .then(permissionState => {
-                if (permissionState === 'granted') {
-                    window.addEventListener('deviceorientation', handleDeviceOrientation);
-                }
-            })
-            .catch(console.error)
-            .finally(proceedWithTransition);
-    } else {
-        window.addEventListener('deviceorientation', handleDeviceOrientation);
-        proceedWithTransition();
-    }
-}
-
-function proceedWithTransition() {
     gameState.current = 'transitioning';
     titleScreenEl.style.opacity = '0';
     setTimeout(() => { titleScreenEl.style.display = 'none'; }, 500);
@@ -386,13 +370,15 @@ function handlePointerUp() {
 
 function handleDeviceOrientation(e) {
   if (gameState.current !== 'playing' || gameState.hasWon || e.beta === null) return;
-  let hintShown = false;
-  if (e.beta > 150 || e.beta < -150) {
+  
+  // Check if the phone is held upside down (pitch/beta is approx -90 degrees).
+  // A value less than -75 degrees should be a reliable indicator.
+  if (e.beta < -75) {
     gameState.upwardForce = 0.1;
-    if (cubes.length === 1 && !hintShown) {
+    if (cubes.length === 1 && !gameState.motionHintShown) {
         instructionsEl.textContent = "What's happening...?";
         instructionsEl.classList.remove('hidden');
-        hintShown = true;
+        gameState.motionHintShown = true;
     }
   } else {
     gameState.upwardForce = 0;
