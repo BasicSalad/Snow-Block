@@ -378,10 +378,10 @@ function handlePointerMove(e) {
       mainCube.mass = Math.pow(maxSize / START_SIZE, 3);
   }
   
-  mainCube.vx += (deltaX * physics.pushMultiplier) / mainCube.mass;
-  mainCube.vy += (deltaY * physics.pushMultiplier) / mainCube.mass;
-  mainCube.vRx += (deltaY * 0.001) / mainCube.mass;
-  mainCube.vRy -= (deltaX * 0.001) / mainCube.mass;
+  mainCube.vx -= (deltaX * physics.pushMultiplier) / mainCube.mass;
+  mainCube.vy -= (deltaY * physics.pushMultiplier) / mainCube.mass;
+  mainCube.vRx -= (deltaY * 0.001) / mainCube.mass;
+  mainCube.vRy += (deltaX * 0.001) / mainCube.mass;
   
   gameState.lastPointerX = e.clientX;
   gameState.lastPointerY = e.clientY;
