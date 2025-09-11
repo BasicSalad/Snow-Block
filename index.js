@@ -10,9 +10,6 @@ const titleScreenEl = document.getElementById('title-screen');
 const instructionsEl = document.getElementById('instructions');
 const winMessageEl = document.getElementById('win-message');
 const finalMessageEl = document.getElementById('final-message');
-const platformTextEl = document.getElementById('platform-text');
-const trailCanvas = document.createElement('canvas');
-const trailCtx = trailCanvas.getContext('2d');
 
 
 // --- GAME STATE ---
@@ -47,7 +44,7 @@ let winMessageFontSize = 40; // default
 // --- AUDIO ---
 let audioContext;
 let dragSoundNode = null;
-let ambientSoundNode = null;
+let musicNode = null;
 
 
 // --- GAME CONFIG & PHYSICS ---
@@ -83,13 +80,13 @@ const projectedVertices = Array.from({ length: 8 }, () => ({ x: 0, y: 0 }));
 
 // Path for the letter 'M' in the title font style. 'W' is generated from this.
 const M_PATH = [[0, 0], [1, 0], [1, 3], [2, 0], [3, 3], [3, 0], [4, 0], [4, 5], [3, 5], [2, 2], [1, 5], [0, 5]];
-const FIVE_PATH = [[4, 5], [0, 5], [0, 3], [3, 3], [3, 1], [0, 1], [0, 0], [4, 0], [4, 2], [1, 2], [1, 4], [4, 4]];
+const FIVE_PATH = [[0, 5], [4, 5], [4, 3], [1, 3], [1, 2], [4, 2], [4, 0], [0, 0], [0, 1], [3, 1], [3, 4], [0, 4]];
 
 const letterShapes = {
-    '5': { path: FIVE_PATH.map(p => [p[0], 5 - p[1]]).reverse() },
+    '5': { path: FIVE_PATH },
     'N': { path: [[0, 0], [1, 0], [1, 3], [3, 0], [4, 0], [4, 5], [3, 5], [3, 2], [1, 5], [0, 5]] },
     'O': { path: [[0, 0], [4, 0], [4, 5], [0, 5]], holes: [[[1, 1], [3, 1], [3, 4], [1, 4]]] },
-    'W': { path: M_PATH },
+    'M': { path: M_PATH },
     'B': { path: [[0, 0], [3, 0], [4, 1], [4, 2], [3, 2.5], [4, 3], [4, 4], [3, 5], [0, 5]], holes: [[[1, 1], [2, 1], [2, 2], [1, 2]], [[1, 3], [2, 3], [2, 4], [1, 4]]] },
     'L': { path: [[0, 0], [1, 0], [1, 4], [4, 4], [4, 5], [0, 5]] },
     'C': { path: [[4, 0], [0, 0], [0, 5], [4, 5], [4, 4], [1, 4], [1, 1], [4, 1]] },
@@ -101,8 +98,6 @@ const letterShapes = {
 function setup() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
-  trailCanvas.width = canvas.width;
-  trailCanvas.height = canvas.height;
   winMessageFontSize = 2.5 * parseFloat(getComputedStyle(document.documentElement).fontSize);
 
   // Set target zone position
@@ -112,6 +107,8 @@ function setup() {
   for (const char in letterShapes) {
       titleState.letterMeshes[char] = extrudeShape(letterShapes[char]);
   }
+  titleState.letterMeshes['W'] = extrudeShape({ path: M_PATH.map(p => [p[0], 5 - p[1]])});
+
 
   initializeTitleCubes(); // Create the backdrop cubes
 
@@ -140,7 +137,6 @@ function setupGame() {
   };
   cubes = [startCube];
   textShards = [];
-  trailCtx.clearRect(0, 0, trailCanvas.width, trailCanvas.height);
 
   Object.assign(gameState, {
       totalDistancePushed: 0, upwardForce: 0,
@@ -152,9 +148,6 @@ function setupGame() {
   instructionsEl.textContent = '';
   instructionsEl.classList.add('hidden');
   
-  platformTextEl.textContent = 'A change in perspective is all it takes.';
-  platformTextEl.classList.remove('hidden');
-
   Array.from(winMessageEl.children).forEach(span => {
     span.style.transform = '';
   });
@@ -263,10 +256,12 @@ function drawTransition() {
 function updateGame() {
   if (gameState.current === 'won' && cubes.length <= 1) return;
 
-  cubes.forEach((cube, index) => {
-    const prevX = cube.x;
-    const prevY = cube.y;
+  const mainCube = cubes[0];
+  if (mainCube) {
+      targetZone.size = mainCube.size;
+  }
 
+  cubes.forEach((cube, index) => {
     if (gameState.current === 'playing' && index === 0 && cubes.length === 1) {
         cube.vy -= gameState.upwardForce;
     }
@@ -305,10 +300,6 @@ function updateGame() {
         cube.x = canvas.width - halfSize;
         cube.vx *= physics.bounce;
     }
-    
-    if (gameState.current === 'playing' && gameState.isDragging && Math.hypot(cube.x - prevX, cube.y - prevY) > 1) {
-        drawTrailSegment(prevX, prevY, cube.x, cube.y, cube.size);
-    }
   });
 
   textShards.forEach(shard => {
@@ -321,19 +312,16 @@ function updateGame() {
   });
   textShards = textShards.filter(shard => shard.y < canvas.height + 50);
 
-  const mainCube = cubes[0];
   if (cubes.length === 1 && mainCube) {
       if (gameState.current === 'playing') {
-        const isHorizontallyAligned = Math.abs(mainCube.x - targetZone.x) < targetZone.size / 2;
-        const isVerticallyAligned = Math.abs(mainCube.y - targetZone.y) < targetZone.size / 2;
-        const isCorrectSize = Math.abs(mainCube.size - targetZone.size) < 5;
+        const isHorizontallyAligned = Math.abs(mainCube.x - targetZone.x) < START_SIZE / 2;
+        const isVerticallyAligned = Math.abs(mainCube.y - targetZone.y) < START_SIZE / 2;
+        const isCorrectSize = Math.abs(mainCube.size - START_SIZE) < 5;
 
         if (isHorizontallyAligned && isVerticallyAligned && isCorrectSize) {
             winGame();
         }
 
-        const maxSize = canvas.width / MAX_SIZE_FACTOR;
-        if (mainCube.size >= maxSize) showTemporaryMessageAndReset("It shattered under its own weight.", shatterAndReset);
       } else if (gameState.current === 'smashing') {
           const winMessageRect = winMessageEl.getBoundingClientRect();
           if (mainCube.y > winMessageRect.top - mainCube.size) {
@@ -354,17 +342,6 @@ function updateGame() {
 }
 
 function drawGameUI() {
-    // Draw starting line
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-    ctx.lineWidth = 1;
-    const startCubeY = canvas.height - START_SIZE * 1.5;
-    const startLineY = startCubeY + START_SIZE / 2 + 5;
-    const startLineWidth = START_SIZE * 1.2;
-    ctx.beginPath();
-    ctx.moveTo(canvas.width / 2 - startLineWidth / 2, startLineY);
-    ctx.lineTo(canvas.width / 2 + startLineWidth / 2, startLineY);
-    ctx.stroke();
-
     // Draw target box
     ctx.strokeStyle = '#FFFFFF';
     ctx.lineWidth = 2;
@@ -378,7 +355,6 @@ function drawGameUI() {
 
 function drawGame() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(trailCanvas, 0, 0);
 
   if (gameState.current === 'playing' || gameState.current === 'smashing') {
     drawGameUI();
@@ -429,45 +405,6 @@ function drawWireframeObject(obj, vertices, edges, projectionBuffer) {
   });
   ctx.stroke();
   ctx.restore();
-}
-
-function drawTrailSegment(x1, y1, x2, y2, size) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const len = Math.hypot(dx, dy);
-    if (len < 1) return;
-
-    const nx = dx / len;
-    const ny = dy / len;
-    
-    const px = -ny;
-    const py = nx;
-
-    const offset = size / 2;
-
-    const p1_start = { x: x1 + px * offset, y: y1 + py * offset };
-    const p1_end = { x: x2 + px * offset, y: y2 + py * offset };
-    const p2_start = { x: x1 - px * offset, y: y1 - py * offset };
-    const p2_end = { x: x2 - px * offset, y: y2 + py * offset };
-
-    trailCtx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
-    trailCtx.lineWidth = 2;
-    trailCtx.lineCap = 'round';
-    trailCtx.beginPath();
-    trailCtx.moveTo(p1_start.x + 1, p1_start.y + 1);
-    trailCtx.lineTo(p1_end.x + 1, p1_end.y + 1);
-    trailCtx.moveTo(p2_start.x + 1, p2_start.y + 1);
-    trailCtx.lineTo(p2_end.x + 1, p2_end.y + 1);
-    trailCtx.stroke();
-    
-    trailCtx.strokeStyle = '#FFFFFF';
-    trailCtx.lineWidth = 1.5;
-    trailCtx.beginPath();
-    trailCtx.moveTo(p1_start.x, p1_start.y);
-    trailCtx.lineTo(p1_end.x, p1_end.y);
-    trailCtx.moveTo(p2_start.x, p2_start.y);
-    trailCtx.lineTo(p2_end.x, p2_end.y);
-    trailCtx.stroke();
 }
 
 // --- TITLE SCREEN 3D RENDERING ---
@@ -557,20 +494,25 @@ function draw3DObject(mesh, x, y, size, rotX, rotY) {
 }
 
 function drawTitle() {
-    // No longer clears the canvas, to allow drawing over the backdrop
     const line1 = "5NOW";
     const line2 = "BLOCK";
-    const totalLetters = line1.length + line2.length;
-    
-    const scale = Math.min(canvas.width / (totalLetters * 3), canvas.height / 15);
+    const subtext = "Tap to begin";
+
+    // Reduced scale for a smaller title
+    const scale = Math.min(canvas.width / 35, canvas.height / 25);
     const charWidth = scale * 4.5;
     const lineHeight = scale * 6;
+    const subtextHeight = 20;
+    const totalHeight = lineHeight * 2 + subtextHeight;
+
+    // Calculate vertical offset to center the entire block
+    const startY = canvas.height / 2 - totalHeight / 2;
 
     const drawLine = (text, yOffset) => {
         const totalWidth = text.length * charWidth;
         let currentX = canvas.width / 2 - totalWidth / 2 + charWidth / 2;
         for (const char of text) {
-            const mesh = titleState.letterMeshes[char];
+            const mesh = titleState.letterMeshes[char] || titleState.letterMeshes[char.toUpperCase()];
             if (mesh) {
                 draw3DObject(mesh, currentX, yOffset, scale, titleState.rotationX, titleState.rotationY);
             }
@@ -578,15 +520,19 @@ function drawTitle() {
         }
     };
     
-    drawLine(line1, canvas.height / 2 - lineHeight / 2);
-    drawLine(line2, canvas.height / 2 + lineHeight / 2);
+    // Draw the title lines and subtext
+    drawLine(line1, startY + lineHeight / 2);
+    drawLine(line2, startY + lineHeight * 1.5);
 
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    // Flashing "Tap to begin" text
+    const flash = (Math.sin(Date.now() / 400) + 1) / 2; // oscillates between 0 and 1
+    const flashOpacity = 0.4 + flash * 0.6; // oscillates between 0.4 and 1.0
+    ctx.fillStyle = `rgba(255, 255, 255, ${flashOpacity})`;
     ctx.font = '16px "Helvetica Neue", Arial, sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('Tap to begin', canvas.width / 2, canvas.height / 2 + lineHeight * 1.5);
+    // Moved down
+    ctx.fillText(subtext, canvas.width / 2, startY + lineHeight * 2 + subtextHeight / 2 + 50);
 }
-
 
 
 // --- ACTIONS ---
@@ -629,7 +575,6 @@ function winGame() {
     gameState.current = 'won';
     winMessageEl.classList.remove('hidden');
     instructionsEl.classList.add('hidden');
-    platformTextEl.classList.add('hidden');
     cubes.forEach(cube => { cube.vx = cube.vy = cube.vRx = cube.vRy = 0; });
     playWinSound(audioContext);
 }
@@ -742,34 +687,80 @@ function playCollisionSound(context, velocity) {
     osc.stop(now + 0.2);
 }
 
-function startAmbientSound(context) {
-    if (!context || ambientSoundNode) return;
+function startMusicLoop(context) {
+    if (!context || musicNode) return;
 
-    const bufferSize = 2 * context.sampleRate;
-    const noiseBuffer = context.createBuffer(1, bufferSize, context.sampleRate);
-    const output = noiseBuffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-        output[i] = Math.random() * 2 - 1;
+    const masterGain = context.createGain();
+    masterGain.gain.setValueAtTime(0, context.currentTime);
+    masterGain.gain.linearRampToValueAtTime(0.2, context.currentTime + 5);
+    masterGain.connect(context.destination);
+
+    // --- Pad Synth ---
+    const padOsc = context.createOscillator();
+    padOsc.type = 'sawtooth';
+    padOsc.frequency.value = 65.41; // C2
+
+    const padFilter = context.createBiquadFilter();
+    padFilter.type = 'lowpass';
+    padFilter.frequency.value = 440;
+    padFilter.Q.value = 5;
+
+    const padLFO = context.createOscillator();
+    padLFO.type = 'sine';
+    padLFO.frequency.value = 0.1;
+
+    const lfoGain = context.createGain();
+    lfoGain.gain.value = 150;
+
+    padLFO.connect(lfoGain);
+    lfoGain.connect(padFilter.frequency);
+    padOsc.connect(padFilter);
+    padFilter.connect(masterGain);
+
+    // --- Arpeggio Synth ---
+    const arpOsc = context.createOscillator();
+    arpOsc.type = 'triangle';
+    const arpGain = context.createGain();
+    arpGain.gain.value = 0;
+
+    const delay = context.createDelay(5.0);
+    delay.delayTime.value = 0.46875;
+    const feedback = context.createGain();
+    feedback.gain.value = 0.4;
+
+    arpOsc.connect(arpGain);
+    arpGain.connect(masterGain);
+    arpGain.connect(delay);
+    delay.connect(feedback);
+    feedback.connect(delay);
+    delay.connect(masterGain);
+
+    // --- Note Scheduling ---
+    const scale = [130.81, 155.56, 196.00, 233.08, 261.63, 311.13, 392.00]; // C Minor Pentatonic
+    const sequence = [0, 4, 2, 5, 0, 4, 2, 6, 1, 5, 3, 6, 1, 5, 3, 5, 0, 4, 2, 5, 0, 4, 2, 6, 1, 5, 3, 6, 2, 4, 1, 3];
+    const loopDuration = 15;
+    const noteTime = loopDuration / sequence.length;
+    let nextNoteTime = context.currentTime;
+    let seqIndex = 0;
+
+    function scheduleNotes() {
+        const schedulerLookahead = 0.1;
+        while (nextNoteTime < context.currentTime + schedulerLookahead) {
+            const noteIndex = sequence[seqIndex % sequence.length];
+            arpOsc.frequency.setValueAtTime(scale[noteIndex], nextNoteTime);
+            arpGain.gain.cancelScheduledValues(nextNoteTime);
+            arpGain.gain.setValueAtTime(0.5, nextNoteTime);
+            arpGain.gain.exponentialRampToValueAtTime(0.001, nextNoteTime + noteTime * 0.9);
+            nextNoteTime += noteTime;
+            seqIndex++;
+        }
     }
 
-    const noise = context.createBufferSource();
-    noise.buffer = noiseBuffer;
-    noise.loop = true;
-
-    const filter = context.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.value = 150;
-
-    const gain = context.createGain();
-    gain.gain.setValueAtTime(0, context.currentTime);
-    gain.gain.linearRampToValueAtTime(0.03, context.currentTime + 3); // Fade in
-
-    noise.connect(filter);
-    filter.connect(gain);
-    gain.connect(context.destination);
-
-    noise.start();
-    ambientSoundNode = { noise, filter, gain };
+    padOsc.start();
+    padLFO.start();
+    arpOsc.start();
+    const schedulerInterval = setInterval(scheduleNotes, 25);
+    musicNode = { masterGain, padOsc, padLFO, arpOsc, schedulerInterval };
 }
 
 function playShatterSound(context) {
@@ -851,7 +842,7 @@ window.addEventListener('pointerup', handlePointerUp);
 function handleTitleTap() {
     if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        startAmbientSound(audioContext);
+        startMusicLoop(audioContext);
     }
 
     if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
