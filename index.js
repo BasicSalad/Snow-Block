@@ -14,12 +14,8 @@ const levelMessageEl = document.getElementById('level-message');
 const gameState = {
     currentScene: 'title', // 'title', 'title-outro', 'game', 'won'
     isDragging: false,
-    lastPointerX: 0,
-    lastPointerY: 0,
-    pushOffsetX: 0,
-    pushOffsetY: 0,
-    totalDistancePushed: 0,
-    upwardForce: 0,
+    startPointerX: 0,
+    startPointerY: 0,
 };
 
 const transitionState = { cubes: [] };
@@ -36,7 +32,6 @@ let musicNode = null;
 const physics = {
   snowDrag: 0.92,
   gravity: 0.5,
-  pushMultiplier: 0.3,
   rotationalDamping: 0.97,
   bounce: -0.5,
 };
@@ -75,25 +70,26 @@ function createCube(x, y, overrides = {}) {
     return {
         size: START_SIZE, x, y, prevX: x, prevY: y, mass: 1, vx: 0, vy: 0,
         rotationX: 0, rotationY: 0, vRx: 0, vRy: 0,
+        // Animation state
+        isAnimating: false, animProgress: 0,
+        startX: 0, startY: 0, targetX: 0, targetY: 0,
+        startRotX: 0, startRotY: 0, targetRotX: 0, targetRotY: 0,
         ...overrides,
     };
 }
 
 function startGame() {
     gameState.currentScene = 'game';
-    cube = createCube(canvas.width / 2, canvas.height - START_SIZE * 1.5, {rotationY: 0.4});
+    const platformY = canvas.height - START_SIZE;
+    cube = createCube(canvas.width / 2, platformY - START_SIZE / 2, {rotationY: 0.4});
     targetZone = { x: canvas.width / 2, y: 60, size: START_SIZE };
 
-    Object.assign(gameState, { totalDistancePushed: 0, upwardForce: 0 });
-
-    instructionsEl.textContent = "Push the block. Change your perspective.";
-    instructionsEl.classList.remove('hidden');
+    instructionsEl.textContent = ""; // Remove instruction text
     levelMessageEl.classList.add('hidden');
 
     canvas.addEventListener('pointerdown', handleDragStart);
     window.addEventListener('pointermove', handleDragMove);
     window.addEventListener('pointerup', handleDragEnd);
-    window.addEventListener('deviceorientation', handleDeviceOrientation);
 }
 
 function winGame() {
@@ -103,7 +99,6 @@ function winGame() {
     canvas.removeEventListener('pointerdown', handleDragStart);
     window.removeEventListener('pointermove', handleDragMove);
     window.removeEventListener('pointerup', handleDragEnd);
-    window.removeEventListener('deviceorientation', handleDeviceOrientation);
 
     levelMessageEl.textContent = "PERSPECTIVE";
     levelMessageEl.style.transform = 'rotate(0deg)';
@@ -156,17 +151,39 @@ function gameLoop() {
 
 function updateGame() {
     if (!cube) return;
-    cube.vy -= gameState.upwardForce; // Apply tilt force
-    cube.vy += physics.gravity; // Apply gravity
-    cube.vx *= physics.snowDrag;
-    cube.vy *= physics.snowDrag;
-    cube.x += cube.vx;
-    cube.y += cube.vy;
-    cube.rotationX += cube.vRx;
-    cube.rotationY += cube.vRy;
-    cube.vRx *= physics.rotationalDamping;
-    cube.vRy *= physics.rotationalDamping;
-    checkWallCollisions(cube);
+
+    if (cube.isAnimating) {
+        const animationSpeed = 0.05; // Adjust for desired animation duration
+        cube.animProgress += animationSpeed;
+        const easedProgress = easeInOutQuad(cube.animProgress);
+
+        cube.x = lerp(cube.startX, cube.targetX, easedProgress);
+        cube.y = lerp(cube.startY, cube.targetY, easedProgress);
+        cube.rotationX = lerp(cube.startRotX, cube.targetRotX, easedProgress);
+        cube.rotationY = lerp(cube.startRotY, cube.targetRotY, easedProgress);
+
+        if (cube.animProgress >= 1) {
+            cube.isAnimating = false;
+            cube.x = cube.targetX;
+            cube.y = cube.targetY;
+            cube.rotationX = cube.targetRotX;
+            cube.rotationY = cube.targetRotY;
+            // Normalize rotations to prevent them from growing infinitely
+            cube.rotationX = cube.rotationX % (Math.PI * 2);
+            cube.rotationY = cube.rotationY % (Math.PI * 2);
+            
+            // Post-animation wall collision check
+            const halfSize = cube.size / 2;
+            const clampedX = Math.max(halfSize, Math.min(canvas.width - halfSize, cube.x));
+            const clampedY = Math.max(halfSize, Math.min(canvas.height - halfSize, cube.y));
+
+            if (clampedX !== cube.x || clampedY !== cube.y) {
+                playCollisionSound(audioContext, 5);
+                cube.x = clampedX;
+                cube.y = clampedY;
+            }
+        }
+    }
 
     targetZone.size = cube.size; // Dynamic target sizing
 
@@ -180,6 +197,7 @@ function updateGame() {
 }
 
 function drawGame() {
+    drawStartingPlatform();
     drawGameUI();
     if(cube) {
         drawWireframeObject(cube, UNIT_CUBE_VERTICES, CUBE_EDGES, projectedVertices);
@@ -192,59 +210,81 @@ function drawGame() {
 // ====================================================================
 
 function handleDragStart(e) {
-  if (!cube) return;
+  if (!cube || cube.isAnimating) return; // Prevent interaction during animation
   gameState.isDragging = true;
-  gameState.lastPointerX = e.clientX;
-  gameState.lastPointerY = e.clientY;
-  gameState.pushOffsetX = e.clientX - cube.x;
-  gameState.pushOffsetY = e.clientY - cube.y;
-  cube.vx = cube.vy = cube.vRx = cube.vRy = 0;
+  gameState.startPointerX = e.clientX;
+  gameState.startPointerY = e.clientY;
 }
 
 function handleDragMove(e) {
   if (!gameState.isDragging || !cube) return;
-  const deltaX = e.clientX - gameState.lastPointerX;
-  const deltaY = e.clientY - gameState.lastPointerY;
-  gameState.totalDistancePushed += Math.hypot(deltaX, deltaY);
-  
-  const growthFactor = 1 + (gameState.totalDistancePushed / (canvas.height * 2)) * 1.5;
-  const newSize = START_SIZE * growthFactor;
-  cube.size = Math.min(newSize, canvas.width / 4);
-  cube.mass = Math.pow(cube.size/START_SIZE, 3);
-  
-  cube.vx += (deltaX * physics.pushMultiplier) / cube.mass;
-  cube.vy += (deltaY * physics.pushMultiplier) / cube.mass;
-  
-  const rotationalMultiplier = 0.00005;
-  cube.vRx -= (deltaY * gameState.pushOffsetX * rotationalMultiplier) / cube.mass;
-  cube.vRy += (deltaX * gameState.pushOffsetY * rotationalMultiplier) / cube.mass;
-  
-  gameState.lastPointerX = e.clientX;
-  gameState.lastPointerY = e.clientY;
+  // This function is now intentionally left blank. 
+  // All logic is handled on drag end to create a discrete "push" action.
 }
 
-function handleDragEnd() {
+function handleDragEnd(e) {
+  if (!gameState.isDragging || !cube || cube.isAnimating) return;
   gameState.isDragging = false;
-}
 
-function handleDeviceOrientation(e) {
-  if (e.beta === null) return;
-  // Beta: front-back tilt. Negative is forward.
-  if (e.beta < -45) gameState.upwardForce = 0.2;
-  else gameState.upwardForce = 0;
-}
+  const deltaX = e.clientX - gameState.startPointerX;
+  const deltaY = e.clientY - gameState.startPointerY;
+  const dragDistance = Math.hypot(deltaX, deltaY);
+  
+  const minDragDistance = 30; // Min pixels to drag to trigger a push
+  if (dragDistance < minDragDistance) return;
 
+  // Set up animation state
+  cube.isAnimating = true;
+  cube.animProgress = 0;
+  cube.startX = cube.x;
+  cube.startY = cube.y;
+  cube.startRotX = cube.rotationX;
+  cube.startRotY = cube.rotationY;
+
+  // Determine direction and set targets
+  if (Math.abs(deltaX) > Math.abs(deltaY)) { // Horizontal push
+    const direction = Math.sign(deltaX);
+    cube.targetX = cube.x + direction * cube.size;
+    cube.targetY = cube.y; // Y position doesn't change
+    cube.targetRotX = cube.rotationX;
+    cube.targetRotY = cube.rotationY - direction * (Math.PI / 2);
+  } else { // Vertical push
+    const direction = Math.sign(deltaY);
+    cube.targetY = cube.y + direction * cube.size;
+    cube.targetX = cube.x; // X position doesn't change
+    cube.targetRotY = cube.rotationY;
+    cube.targetRotX = cube.rotationX + direction * (Math.PI / 2);
+  }
+
+  // Handle cube growth on each push
+  const growthFactor = 1.05;
+  const newSize = cube.size * growthFactor;
+  cube.size = Math.min(newSize, canvas.width / 4);
+}
 
 // ====================================================================
 // --- GENERIC DRAWING & UTILS ---
 // ====================================================================
 
-function checkWallCollisions(cube) {
-    const halfSize = cube.size / 2;
-    if (cube.y > canvas.height - halfSize) { playCollisionSound(audioContext, Math.abs(cube.vy)); cube.y = canvas.height - halfSize; cube.vy *= physics.bounce; }
-    if (cube.y < halfSize) { playCollisionSound(audioContext, Math.abs(cube.vy)); cube.y = halfSize; cube.vy *= physics.bounce; }
-    if (cube.x < halfSize) { playCollisionSound(audioContext, Math.abs(cube.vx)); cube.x = halfSize; cube.vx *= physics.bounce; }
-    if (cube.x > canvas.width - halfSize) { playCollisionSound(audioContext, Math.abs(cube.vx)); cube.x = canvas.width - halfSize; cube.vx *= physics.bounce; }
+function lerp(start, end, t) {
+  return start * (1 - t) + end * t;
+}
+
+function easeInOutQuad(t) {
+  return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+}
+
+function drawStartingPlatform() {
+    const platformY = canvas.height - START_SIZE;
+    const platformWidth = START_SIZE * 1.2;
+    const platformStartX = canvas.width / 2 - platformWidth / 2;
+    
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(platformStartX, platformY);
+    ctx.lineTo(platformStartX + platformWidth, platformY);
+    ctx.stroke();
 }
 
 function drawGameUI() {
@@ -284,14 +324,10 @@ function handleTitleTap() {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         startMusicLoop(audioContext);
     }
-    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
-        DeviceOrientationEvent.requestPermission()
-            .catch(console.error)
-            .finally(startTitleScreenOutro);
-    } else {
-        startTitleScreenOutro();
-    }
+    // Device orientation permission is no longer needed
+    startTitleScreenOutro();
 }
+
 function startTitleScreenOutro() {
     titleScreenEl.style.opacity = '0';
     setTimeout(() => { 
@@ -317,8 +353,9 @@ function initializeTitleCubes() {
 }
 function updateTitleScreenAnimation() {
     const isOutro = gameState.currentScene === 'title-outro';
+    const speedMultiplier = isOutro ? 3.5 : 1; // Speed up the cubes for the outro transition
     transitionState.cubes.forEach(cube => {
-        cube.y += cube.speed;
+        cube.y += cube.speed * speedMultiplier;
         cube.rotationX += cube.vRx;
         cube.rotationY += cube.vRy;
         
