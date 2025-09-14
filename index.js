@@ -12,18 +12,19 @@ const levelMessageEl = document.getElementById('level-message');
 
 // --- GAME STATE ---
 const gameState = {
-    currentScene: 'title', // 'title', 'title-outro', 'game', 'won', 'collapsing'
+    currentScene: 'title', // 'title', 'title-outro', 'game', 'won', 'collapsing', 'restarting'
     isDragging: false,
     startPointerX: 0,
     startPointerY: 0,
-    permanentTrail: [],
 };
 
 const transitionState = { cubes: [], uiAlpha: 0 };
+const restartTransitionState = { cubes: [] };
 const titleState = { letterMeshes: {} };
 
 let cube = null;
 let collapseParticles = [];
+let collapseState = { floorY: 0 };
 let animationFrameId;
 
 // --- AUDIO ---
@@ -32,18 +33,20 @@ let musicNode = null;
 
 // --- GAME CONFIG & PHYSICS ---
 const physics = {
-  snowDrag: 0.92,
   gravity: 0.5,
-  rotationalDamping: 0.97,
   bounce: -0.5,
 };
-const START_SIZE = 50;
+
+// DYNAMIC SIZING FOR RESPONSIVENESS
+let START_SIZE = 50;
+let SCREEN_PADDING = 5;
 let targetZone = {};
 
 // --- 3D RENDERING DATA (shared) ---
 const UNIT_CUBE_VERTICES = [ { x: -1, y: -1, z: -1 }, { x: 1, y: -1, z: -1 }, { x: 1, y: 1, z: -1 }, { x: -1, y: 1, z: -1 }, { x: -1, y: -1, z: 1 }, { x: 1, y: -1, z: 1 }, { x: 1, y: 1, z: 1 }, { x: -1, y: 1, z: 1 }];
 const CUBE_EDGES = [ [0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7] ];
-const projectedVertices = Array.from({ length: 8 }, () => ({ x: 0, y: 0 }));
+const CUBE_FACES = [ [4, 5, 6, 7], [0, 3, 2, 1], [3, 7, 6, 2], [0, 4, 5, 1], [1, 5, 6, 2], [0, 3, 7, 4] ];
+const projectedVertices = Array.from({ length: 8 }, () => ({ x: 0, y: 0, z: 0 }));
 
 const S_PATH = [[0, 5], [4, 5], [4, 3], [1, 3], [1, 2], [4, 2], [4, 0], [0, 0], [0, 2], [3, 2], [3, 3], [0, 3]];
 const W_PATH = [[0, 0], [1, 0], [1, 3], [2, 0], [3, 3], [3, 0], [4, 0], [4, 5], [3, 5], [2, 2], [1, 5], [0, 5]];
@@ -56,6 +59,12 @@ const letterShapes = { 'S': { path: S_PATH }, 'N': { path: [[0, 0], [1, 0], [1, 
 function setup() {
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
+
+  // Make game elements responsive
+  START_SIZE = Math.max(40, Math.min(canvas.width, canvas.height) * 0.1);
+  SCREEN_PADDING = START_SIZE * 0.1;
+  targetZone = { x: canvas.width / 2, y: START_SIZE * 1.2, size: START_SIZE };
+
   for (const char in letterShapes) {
       titleState.letterMeshes[char] = extrudeShape(letterShapes[char]);
   }
@@ -69,27 +78,30 @@ function setup() {
 }
 
 function createCube(x, y, overrides = {}) {
+    const identity = [1, 0, 0, 0, 1, 0, 0, 0, 1];
     return {
         size: START_SIZE, x, y, prevX: x, prevY: y, mass: 1, vx: 0, vy: 0,
-        rotationX: 0, rotationY: 0, vRx: 0, vRy: 0,
-        // Animation state
+        orientation: [...identity],
         isAnimating: false, animProgress: 0,
         startX: 0, startY: 0, targetX: 0, targetY: 0,
-        startRotX: 0, startRotY: 0, targetRotX: 0, targetRotY: 0,
+        startOrientation: [...identity],
+        animationAxis: null,
+        animationAngle: 0,
+        rollCount: 0,
+        collapseRollTarget: Math.floor(Math.random() * 6) + 8, // 8 to 13 rolls
         ...overrides,
     };
 }
 
 function startGame() {
     gameState.currentScene = 'game';
-    gameState.permanentTrail = [];
-    collapseParticles = []; // Clear any old particles
+    collapseParticles = [];
+    collapseState.floorY = 0;
     const platformY = canvas.height - START_SIZE;
-    const initialGap = 10; // A small gap above the platform
-    cube = createCube(canvas.width / 2, platformY - START_SIZE / 2 - initialGap, {rotationY: 0, rotationX: 0});
-    targetZone = { x: canvas.width / 2, y: 60, size: START_SIZE };
+    const initialGap = 10;
+    cube = createCube(canvas.width / 2, platformY - START_SIZE / 2 - initialGap);
 
-    instructionsEl.textContent = ""; // Remove instruction text
+    instructionsEl.textContent = "";
     levelMessageEl.classList.add('hidden');
 
     setTimeout(showTutorial, 2000);
@@ -104,10 +116,8 @@ function showTutorial() {
 
     if (!tutorialOverlayEl || !tutorialFingerEl) return;
 
-    // Make it visible
     tutorialOverlayEl.classList.remove('hidden');
     
-    // Use timeout to allow CSS to apply display change before opacity transition.
     setTimeout(() => {
         tutorialOverlayEl.style.opacity = '1';
         tutorialOverlayEl.classList.add('animate');
@@ -116,23 +126,20 @@ function showTutorial() {
     const onAnimationEnd = () => {
         tutorialFingerEl.removeEventListener('animationend', onAnimationEnd);
 
-        // Fade out
         tutorialOverlayEl.style.opacity = '0';
         
-        // Hide after fade out
         setTimeout(() => {
             tutorialOverlayEl.classList.add('hidden');
             tutorialOverlayEl.classList.remove('animate');
-        }, 500); // Corresponds to opacity transition time
+        }, 500);
     };
 
     tutorialFingerEl.addEventListener('animationend', onAnimationEnd);
 }
 
 function winGame() {
-    gameState.currentScene = 'won'; // Pause updates
+    gameState.currentScene = 'won';
     
-    // Cleanup listeners
     canvas.removeEventListener('pointerdown', handleDragStart);
     window.removeEventListener('pointerup', handleDragEnd);
 
@@ -171,7 +178,7 @@ function gameLoop() {
       drawStartingPlatform(transitionState.uiAlpha);
       drawGameUI(transitionState.uiAlpha);
       updateTitleScreenAnimation();
-      drawTransition(); // Draw transition cubes on top
+      drawTransition();
       checkTransitionEnd();
       break;
     case 'game':
@@ -180,11 +187,16 @@ function gameLoop() {
       break;
     case 'collapsing':
       updateCollapse();
-      drawGame(); // Draws the platform/target
+      drawGame();
       drawCollapse();
       break;
+    case 'restarting':
+      updateRestartTransition();
+      drawGame();
+      drawCollapse();
+      drawRestartTransition();
+      break;
     case 'won':
-      // Static, draw the last game state and let the HTML message show
       drawGame();
       break;
   }
@@ -195,30 +207,34 @@ function gameLoop() {
 // --- GAME LOGIC ---
 // ====================================================================
 
+let renderOrientation;
+
 function updateGame() {
     if (!cube) return;
 
     if (cube.isAnimating) {
-        const animationSpeed = 0.05; // Adjust for desired animation duration
+        const animationSpeed = (0.05 * START_SIZE) / cube.size;
         cube.animProgress += animationSpeed;
         const easedProgress = easeInOutQuad(cube.animProgress);
 
         cube.x = lerp(cube.startX, cube.targetX, easedProgress);
         cube.y = lerp(cube.startY, cube.targetY, easedProgress);
-        cube.rotationX = lerp(cube.startRotX, cube.targetRotX, easedProgress);
-        cube.rotationY = lerp(cube.startRotY, cube.targetRotY, easedProgress);
+        
+        const currentAngle = cube.animationAngle * easedProgress;
+        const animationRotationMatrix = createRotationMatrix(cube.animationAxis, currentAngle);
+        renderOrientation = multiplyMatrices(animationRotationMatrix, cube.startOrientation);
 
         if (cube.animProgress >= 1) {
             cube.isAnimating = false;
             cube.x = cube.targetX;
             cube.y = cube.targetY;
-            cube.rotationX = cube.targetRotX;
-            cube.rotationY = cube.targetRotY;
-            // Normalize rotations to prevent them from growing infinitely
-            cube.rotationX = cube.rotationX % (Math.PI * 2);
-            cube.rotationY = cube.rotationY % (Math.PI * 2);
+
+            const moveRotationMatrix = createRotationMatrix(cube.animationAxis, cube.animationAngle);
+            cube.orientation = multiplyMatrices(moveRotationMatrix, cube.startOrientation);
+
+            cube.animationAxis = null;
+            cube.animationAngle = 0;
             
-            // Post-animation wall collision check
             const halfSize = cube.size / 2;
             const clampedX = Math.max(halfSize, Math.min(canvas.width - halfSize, cube.x));
             const clampedY = Math.max(halfSize, Math.min(canvas.height - halfSize, cube.y));
@@ -229,9 +245,10 @@ function updateGame() {
                 cube.y = clampedY;
             }
         }
+    } else {
+        renderOrientation = cube.orientation;
     }
 
-    // Win Condition
     const isHorizontallyAligned = Math.abs(cube.x - targetZone.x) < START_SIZE / 2;
     const isVerticallyAligned = Math.abs(cube.y - targetZone.y) < START_SIZE / 2;
     const isCorrectSize = Math.abs(cube.size - START_SIZE) < 5;
@@ -243,15 +260,8 @@ function updateGame() {
 function drawGame() {
     drawStartingPlatform();
     drawGameUI();
-    drawPermanentTrail();
     if (cube) {
-        if (cube.isAnimating) {
-            // Show 3D tumbling animation when moving
-            drawWireframeObject(cube, UNIT_CUBE_VERTICES, CUBE_EDGES, projectedVertices);
-        } else {
-            // Show 2D top-down view when static
-            drawBirdsEyeCube(cube);
-        }
+        drawSolidObject(cube, UNIT_CUBE_VERTICES, CUBE_FACES, projectedVertices, renderOrientation);
     }
 }
 
@@ -259,42 +269,50 @@ function triggerCollapse() {
     gameState.currentScene = 'collapsing';
     playCollapseSound(audioContext);
 
-    const numParticles = 30;
-    collapseParticles = [];
-    for (let i = 0; i < numParticles; i++) {
-        const angle = Math.random() * Math.PI * 2;
-        const speed = 2 + Math.random() * 8;
-        const life = 0.8 + Math.random() * 0.4;
+    collapseState.floorY = cube.y + cube.size;
 
-        collapseParticles.push({
-            x: cube.x + (Math.random() - 0.5) * cube.size * 0.5,
-            y: cube.y + (Math.random() - 0.5) * cube.size * 0.5,
-            size: 8 + Math.random() * 10,
-            vx: Math.cos(angle) * speed,
-            vy: Math.sin(angle) * speed - 4, // Add an upward burst
-            rotationX: Math.random() * Math.PI * 2,
-            rotationY: Math.random() * Math.PI * 2,
-            vRx: (Math.random() - 0.5) * 0.1,
-            vRy: (Math.random() - 0.5) * 0.1,
-            alpha: 1,
-            life: life,
-            decay: 1 / (life * 60) // Assuming 60fps, fade out over `life` seconds
-        });
+    const breakdown = 3;
+    const baseParticleSize = cube.size / breakdown;
+    collapseParticles = [];
+
+    for (let i = 0; i < breakdown; i++) {
+        for (let j = 0; j < breakdown; j++) {
+            for (let k = 0; k < breakdown; k++) {
+                const offsetX = (i - (breakdown - 1) / 2) * baseParticleSize;
+                const offsetY = (j - (breakdown - 1) / 2) * baseParticleSize;
+                
+                const x = cube.x + offsetX + (Math.random() - 0.5) * baseParticleSize * 0.2;
+                const y = cube.y + offsetY + (Math.random() - 0.5) * baseParticleSize * 0.2;
+
+                const sizeVariation = 0.5 + Math.random();
+                const particleSize = baseParticleSize * sizeVariation;
+
+                collapseParticles.push({
+                    x, y,
+                    size: particleSize,
+                    vx: (Math.random() - 0.5) * 3,
+                    vy: (Math.random() - 0.5) * 3 - 2,
+                    vRx: (Math.random() - 0.5) * 0.1,
+                    vRy: (Math.random() - 0.5) * 0.1,
+                    orientation: [...cube.orientation]
+                });
+            }
+        }
     }
 
-    cube = null; // Remove the main cube
+    cube = null;
 
     canvas.removeEventListener('pointerdown', handleDragStart);
     window.removeEventListener('pointerup', handleDragEnd);
     
-    canvas.addEventListener('pointerdown', handleResetSwipeStart);
+    canvas.addEventListener('pointerdown', handleRestartSwipeStart);
 
     levelMessageEl.textContent = "TOO BIG";
     levelMessageEl.style.transform = 'rotate(0deg)';
     levelMessageEl.classList.remove('hidden');
     levelMessageEl.style.opacity = 0;
     
-    instructionsEl.textContent = "Swipe right to reset";
+    instructionsEl.textContent = "Swipe to restart";
     instructionsEl.style.opacity = '1';
 
     let opacity = 0;
@@ -306,23 +324,43 @@ function triggerCollapse() {
 }
 
 function updateCollapse() {
+    const groundY = collapseState.floorY;
+    const friction = 0.85;
+    const rotationalFriction = 0.96;
+
     collapseParticles.forEach(p => {
-        p.vy += physics.gravity * 0.7;
-        p.vx *= physics.snowDrag;
-        p.vy *= physics.snowDrag;
+        p.vy += physics.gravity;
         p.x += p.vx;
         p.y += p.vy;
-        p.rotationX += p.vRx;
-        p.rotationY += p.vRy;
-        p.alpha -= p.decay;
-    });
 
-    collapseParticles = collapseParticles.filter(p => p.alpha > 0);
+        const rotDeltaX = createRotationMatrix('x', p.vRx);
+        const rotDeltaY = createRotationMatrix('y', p.vRy);
+        p.orientation = multiplyMatrices(rotDeltaX, p.orientation);
+        p.orientation = multiplyMatrices(rotDeltaY, p.orientation);
+
+        const halfSize = p.size / 2;
+        if (p.y + halfSize > groundY) {
+            p.y = groundY - halfSize;
+            p.vy *= physics.bounce;
+            p.vx *= friction;
+            p.vRx *= rotationalFriction;
+            p.vRy *= rotationalFriction;
+            if (Math.abs(p.vy) < 0.5) p.vy = 0;
+        }
+        
+        if (p.x - halfSize < 0) {
+            p.x = halfSize;
+            p.vx *= physics.bounce;
+        } else if (p.x + halfSize > canvas.width) {
+            p.x = canvas.width - halfSize;
+            p.vx *= physics.bounce;
+        }
+    });
 }
 
 function drawCollapse() {
     collapseParticles.forEach(p => {
-        drawWireframeObject(p, UNIT_CUBE_VERTICES, CUBE_EDGES, projectedVertices);
+        drawSolidObject(p, UNIT_CUBE_VERTICES, CUBE_FACES, projectedVertices, p.orientation);
     });
 }
 
@@ -332,16 +370,10 @@ function drawCollapse() {
 // ====================================================================
 
 function handleDragStart(e) {
-  if (!cube || cube.isAnimating) return; // Prevent interaction during animation
+  if (!cube || cube.isAnimating) return;
   gameState.isDragging = true;
   gameState.startPointerX = e.clientX;
   gameState.startPointerY = e.clientY;
-}
-
-function handleDragMove(e) {
-  if (!gameState.isDragging || !cube) return;
-  // This function is now intentionally left blank. 
-  // All logic is handled on drag end to create a discrete "push" action.
 }
 
 function handleDragEnd(e) {
@@ -352,92 +384,115 @@ function handleDragEnd(e) {
   const deltaY = e.clientY - gameState.startPointerY;
   const dragDistance = Math.hypot(deltaX, deltaY);
   
-  const minDragDistance = 30; // Min pixels to drag to trigger a push
+  const minDragDistance = 30;
   if (dragDistance < minDragDistance) return;
 
-  const startPoint = { x: cube.x, y: cube.y };
-
-  // Set up animation state
   cube.isAnimating = true;
   cube.animProgress = 0;
   cube.startX = cube.x;
   cube.startY = cube.y;
-  cube.startRotX = cube.rotationX;
-  cube.startRotY = cube.rotationY;
+  cube.startOrientation = [...cube.orientation];
 
-  // Determine direction and set targets
-  if (Math.abs(deltaX) > Math.abs(deltaY)) { // Horizontal push
-    const direction = Math.sign(deltaX);
+  const direction = Math.abs(deltaX) > Math.abs(deltaY) ? Math.sign(deltaX) : Math.sign(deltaY);
+  const halfSize = cube.size / 2;
+  
+  if (Math.abs(deltaX) > Math.abs(deltaY)) {
     cube.targetX = cube.x + direction * cube.size;
-    cube.targetY = cube.y; // Y position doesn't change
-    cube.targetRotX = cube.rotationX;
-    // A push in the +X direction (right) should be a rotation about the +Y axis.
-    cube.targetRotY = cube.rotationY + direction * (Math.PI / 2);
-  } else { // Vertical push
-    const direction = Math.sign(deltaY);
-    cube.targetY = cube.y + direction * cube.size;
-    cube.targetX = cube.x; // X position doesn't change
-    cube.targetRotY = cube.rotationY;
-    // A push in the +Y direction (down) should be a rotation about the +X axis (roll forward).
-    cube.targetRotX = cube.rotationX + direction * (Math.PI / 2);
+    cube.targetY = cube.y;
+    
+    if (cube.targetX + halfSize > canvas.width - SCREEN_PADDING || cube.targetX - halfSize < SCREEN_PADDING) {
+        playCollisionSound(audioContext, 5);
+        cube.isAnimating = false;
+        return;
+    }
+
+    cube.animationAxis = 'y';
+    cube.animationAngle = direction * (Math.PI / 2);
+  } else {
+    const platformY = canvas.height - START_SIZE;
+    const potentialTargetY = cube.y + direction * cube.size;
+
+    if (direction > 0 && (potentialTargetY + halfSize > platformY)) {
+        playCollisionSound(audioContext, 5);
+        cube.isAnimating = false;
+        return;
+    }
+    
+    if (direction < 0 && (potentialTargetY - halfSize < SCREEN_PADDING)) {
+        playCollisionSound(audioContext, 5);
+        cube.isAnimating = false;
+        return;
+    }
+
+    cube.targetY = potentialTargetY;
+    cube.targetX = cube.x;
+    cube.animationAxis = 'x';
+    cube.animationAngle = direction * (Math.PI / 2);
   }
 
-  // Add the new segment to the permanent trail
-  gameState.permanentTrail.push({
-    start: startPoint,
-    end: { x: cube.targetX, y: cube.targetY },
-    size: cube.size // Store the size before it grows
-  });
-
-  // Handle cube growth on each push
+  cube.rollCount++;
+  
   const growthFactor = 1.05;
   const newSize = cube.size * growthFactor;
+  cube.size = Math.min(newSize, START_SIZE * 4);
 
-  const collapseThreshold = START_SIZE * 2;
-  if (newSize >= collapseThreshold) {
-    // Let the cube grow to its collapsing size for the animation, then trigger collapse.
-    cube.size = newSize;
+  if (cube.rollCount >= cube.collapseRollTarget) {
     triggerCollapse();
-  } else {
-    // If not collapsing, update the size and apply the normal size cap.
-    cube.size = Math.min(newSize, canvas.width / 4);
   }
 }
 
-let resetSwipeState = {
+let restartSwipeState = {
     isSwiping: false,
     startX: 0,
+    startY: 0,
 };
 
-function handleResetSwipeStart(e) {
-    resetSwipeState.isSwiping = true;
-    resetSwipeState.startX = e.clientX;
-    window.addEventListener('pointerup', handleResetSwipeEnd, { once: true });
+function handleRestartSwipeStart(e) {
+    restartSwipeState.isSwiping = true;
+    restartSwipeState.startX = e.clientX;
+    restartSwipeState.startY = e.clientY;
+    window.addEventListener('pointerup', handleRestartSwipeEnd, { once: true });
 }
 
-function handleResetSwipeEnd(e) {
-    if (!resetSwipeState.isSwiping) return;
-    resetSwipeState.isSwiping = false;
+function handleRestartSwipeEnd(e) {
+    if (!restartSwipeState.isSwiping) return;
+    restartSwipeState.isSwiping = false;
 
-    const deltaX = e.clientX - resetSwipeState.startX;
-    const swipeThreshold = 100; // Min pixels to swipe to trigger reset
+    const deltaX = e.clientX - restartSwipeState.startX;
+    const deltaY = e.clientY - restartSwipeState.startY;
+    const dragDistance = Math.hypot(deltaX, deltaY);
+    const swipeThreshold = 50; 
 
-    if (deltaX > swipeThreshold) {
-        canvas.removeEventListener('pointerdown', handleResetSwipeStart);
-
-        let opacity = 1;
-        const fadeOutInterval = setInterval(() => {
-            opacity -= 0.05;
-            levelMessageEl.style.opacity = opacity;
-            instructionsEl.style.opacity = opacity;
-            if (opacity <= 0) {
-                clearInterval(fadeOutInterval);
-                levelMessageEl.classList.add('hidden');
-                instructionsEl.textContent = "";
-                instructionsEl.style.opacity = 1; // Reset for next time
-                startGame();
-            }
-        }, 50);
+    if (dragDistance > swipeThreshold) {
+        canvas.removeEventListener('pointerdown', handleRestartSwipeStart);
+        
+        const vec = { x: deltaX / dragDistance, y: deltaY / dragDistance };
+        const perpVec = { x: -vec.y, y: vec.x };
+        const speed = 25 + Math.random() * 10;
+        
+        restartTransitionState.cubes = [];
+        for (let i = 0; i < 80; i++) {
+            const spread = (Math.random() - 0.5) * Math.max(canvas.width, canvas.height) * 2.5;
+            const startX = (canvas.width / 2) - vec.x * (canvas.width / 2 + 100) + perpVec.x * spread;
+            const startY = (canvas.height / 2) - vec.y * (canvas.height / 2 + 100) + perpVec.y * spread;
+            
+            restartTransitionState.cubes.push({
+                baseX: startX, baseY: startY,
+                x: startX, y: startY,
+                vx: vec.x * speed, vy: vec.y * speed,
+                perpVec: perpVec,
+                swayAngle: Math.random() * Math.PI * 2,
+                swayFrequency: 0.04 + Math.random() * 0.04,
+                swayAmplitude: 20 + Math.random() * 40,
+                size: 5 + Math.random() * 10,
+                rotationX: Math.random() * Math.PI * 2,
+                rotationY: Math.random() * Math.PI * 2,
+                vRx: (Math.random() - 0.5) * 0.1,
+                vRy: (Math.random() - 0.5) * 0.1,
+                alpha: 0.4 + Math.random() * 0.6
+            });
+        }
+        gameState.currentScene = 'restarting';
     }
 }
 
@@ -453,6 +508,40 @@ function lerp(start, end, t) {
 function easeInOutQuad(t) {
   return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
 }
+
+function createRotationMatrix(axis, angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    if (axis === 'x') {
+        return [1, 0, 0, 0, c, -s, 0, s, c];
+    } else if (axis === 'y') {
+        return [c, 0, s, 0, 1, 0, -s, 0, c];
+    }
+    return [1, 0, 0, 0, 1, 0, 0, 0, 1];
+}
+
+function multiplyMatrices(a, b) {
+    const c = Array(9);
+    c[0] = a[0] * b[0] + a[1] * b[3] + a[2] * b[6];
+    c[1] = a[0] * b[1] + a[1] * b[4] + a[2] * b[7];
+    c[2] = a[0] * b[2] + a[1] * b[5] + a[2] * b[8];
+    c[3] = a[3] * b[0] + a[4] * b[3] + a[5] * b[6];
+    c[4] = a[3] * b[1] + a[4] * b[4] + a[5] * b[7];
+    c[5] = a[3] * b[2] + a[4] * b[5] + a[5] * b[8];
+    c[6] = a[6] * b[0] + a[7] * b[3] + a[8] * b[6];
+    c[7] = a[6] * b[1] + a[7] * b[4] + a[8] * b[7];
+    c[8] = a[6] * b[2] + a[7] * b[5] + a[8] * b[8];
+    return c;
+}
+
+function transformVertex(v, m) {
+    return {
+        x: v.x * m[0] + v.y * m[1] + v.z * m[2],
+        y: v.x * m[3] + v.y * m[4] + v.z * m[5],
+        z: v.x * m[6] + v.y * m[7] + v.z * m[8],
+    };
+}
+
 
 function drawStartingPlatform(alpha = 1) {
     const platformY = canvas.height - START_SIZE;
@@ -473,68 +562,58 @@ function drawGameUI(alpha = 1) {
     ctx.strokeRect(targetZone.x - targetZone.size / 2, targetZone.y - targetZone.size / 2, targetZone.size, targetZone.size);
 }
 
-function drawPermanentTrail() {
-    if (gameState.permanentTrail.length < 1) return;
-
-    ctx.strokeStyle = `rgba(255, 255, 255, 0.4)`;
-    ctx.lineWidth = 2;
-    ctx.lineCap = 'butt';
-    ctx.lineJoin = 'miter';
-
-    gameState.permanentTrail.forEach(segment => {
-        const { start, end, size } = segment;
-        const halfSize = size / 2;
-
-        const dx = end.x - start.x;
-        const dy = end.y - start.y;
-
-        const len = Math.hypot(dx, dy);
-        if (len < 0.1) return;
-
-        // Vector perpendicular to the direction of movement, scaled by half size
-        const offsetX = (-dy / len) * halfSize;
-        const offsetY = (dx / len) * halfSize;
-        
-        ctx.beginPath();
-        // Line 1
-        ctx.moveTo(start.x + offsetX, start.y + offsetY);
-        ctx.lineTo(end.x + offsetX, end.y + offsetY);
-        
-        // Line 2
-        ctx.moveTo(start.x - offsetX, start.y - offsetY);
-        ctx.lineTo(end.x - offsetX, end.y - offsetY);
-        ctx.stroke();
-    });
-}
-
-function drawBirdsEyeCube(obj) {
+function drawSolidObject(obj, vertices, faces, projectionBuffer, orientation) {
     ctx.save();
     ctx.translate(obj.x, obj.y);
-    // Use rotationY for the top-down spin effect, which is modified on horizontal pushes.
-    ctx.rotate(obj.rotationY); 
-    
-    ctx.strokeStyle = obj.alpha ? `rgba(255, 255, 255, ${obj.alpha})` : '#FFFFFF';
-    ctx.lineWidth = 2;
-    
     const halfSize = obj.size / 2;
-    ctx.strokeRect(-halfSize, -halfSize, obj.size, obj.size);
-    
+
+    vertices.forEach((v, i) => {
+        const rotatedV = transformVertex(v, orientation);
+        projectionBuffer[i] = {
+            x: rotatedV.x * halfSize,
+            y: rotatedV.y * halfSize,
+            z: rotatedV.z * halfSize
+        };
+    });
+
+    const renderableFaces = faces.map(faceIndices => {
+        const avgZ = faceIndices.reduce((sum, i) => sum + projectionBuffer[i].z, 0) / faceIndices.length;
+        return { vertices: faceIndices, avgZ: avgZ };
+    });
+
+    renderableFaces.sort((a, b) => a.avgZ - b.avgZ);
+
+    renderableFaces.forEach(face => {
+        ctx.beginPath();
+        const firstVertexIndex = face.vertices[0];
+        ctx.moveTo(projectionBuffer[firstVertexIndex].x, projectionBuffer[firstVertexIndex].y);
+        for (let i = 1; i < face.vertices.length; i++) {
+            const vertexIndex = face.vertices[i];
+            ctx.lineTo(projectionBuffer[vertexIndex].x, projectionBuffer[vertexIndex].y);
+        }
+        ctx.closePath();
+        
+        ctx.fillStyle = obj.alpha ? `rgba(0, 0, 0, ${obj.alpha})` : '#000000';
+        ctx.strokeStyle = obj.alpha ? `rgba(255, 255, 255, ${obj.alpha})` : '#FFFFFF';
+        ctx.lineWidth = 2;
+        
+        ctx.fill();
+        ctx.stroke();
+    });
+
     ctx.restore();
 }
 
-function drawWireframeObject(obj, vertices, edges, projectionBuffer) {
+function drawWireframeObject(obj, vertices, edges, projectionBuffer, orientation) {
   ctx.save();
   ctx.translate(obj.x, obj.y);
   const halfSize = obj.size / 2;
-  const sX = Math.sin(obj.rotationX); const cX = Math.cos(obj.rotationX);
-  const sY = Math.sin(obj.rotationY); const cY = Math.cos(obj.rotationY);
+
   vertices.forEach((v, i) => {
-    // Apply X rotation first (pitch), then Y rotation (yaw) for more intuitive tumbling
-    const rotX_y = v.y * cX - v.z * sX;
-    const rotX_z = v.y * sX + v.z * cX;
-    const rotY_x = v.x * cY - rotX_z * sY;
-    projectionBuffer[i] = { x: rotY_x * halfSize, y: rotX_y * halfSize };
+    const rotatedV = transformVertex(v, orientation);
+    projectionBuffer[i] = { x: rotatedV.x * halfSize, y: rotatedV.y * halfSize, z: rotatedV.z * halfSize };
   });
+
   ctx.strokeStyle = obj.alpha ? `rgba(255, 255, 255, ${obj.alpha})` : '#FFFFFF';
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -555,7 +634,6 @@ function handleTitleTap() {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         startMusicLoop(audioContext);
     }
-    // Device orientation permission is no longer needed
     startTitleScreenOutro();
 }
 
@@ -565,9 +643,6 @@ function startTitleScreenOutro() {
         titleScreenEl.style.display = 'none';
      }, 500);
     
-    // Initialize game UI elements for the transition
-    targetZone = { x: canvas.width / 2, y: 60, size: START_SIZE };
-
     gameState.currentScene = 'title-outro';
 }
 
@@ -580,14 +655,14 @@ function checkTransitionEnd() {
 
 function initializeTitleCubes() {
     transitionState.cubes = [];
-    for (let i = 0; i < 150; i++) {
+    for (let i = 0; i < 80; i++) {
         const initialX = Math.random() * canvas.width;
         transitionState.cubes.push({ x: initialX, y: Math.random() * canvas.height, size: 5 + Math.random() * 10, rotationX: Math.random() * Math.PI * 2, rotationY: Math.random() * Math.PI * 2, vRx: (Math.random() - 0.5) * 0.02, vRy: (Math.random() - 0.5) * 0.02, speed: 0.5 + Math.random() * 1, initialX: initialX, swayAngle: Math.random() * Math.PI * 2, swayFrequency: 0.01 + Math.random() * 0.01, swayAmplitude: 20 + Math.random() * 40, alpha: 0.4 + Math.random() * 0.6 });
     }
 }
 function updateTitleScreenAnimation() {
     const isOutro = gameState.currentScene === 'title-outro';
-    const speedMultiplier = isOutro ? 3.5 : 1; // Speed up the cubes for the outro transition
+    const speedMultiplier = isOutro ? 3.5 : 1;
     transitionState.cubes.forEach(cube => {
         cube.y += cube.speed * speedMultiplier;
         cube.rotationX += cube.vRx;
@@ -604,8 +679,65 @@ function updateTitleScreenAnimation() {
     });
 }
 function drawTransition() {
-  transitionState.cubes.forEach(c => drawWireframeObject(c, UNIT_CUBE_VERTICES, CUBE_EDGES, projectedVertices));
+    transitionState.cubes.forEach(c => {
+        const rotX = createRotationMatrix('x', c.rotationX);
+        const rotY = createRotationMatrix('y', c.rotationY);
+        const orientation = multiplyMatrices(rotY, rotX);
+        drawWireframeObject(c, UNIT_CUBE_VERTICES, CUBE_EDGES, projectedVertices, orientation);
+    });
 }
+
+function updateRestartTransition() {
+    if (parseFloat(levelMessageEl.style.opacity) > 0) {
+        let newOpacity = Math.max(0, parseFloat(levelMessageEl.style.opacity) - 0.03);
+        levelMessageEl.style.opacity = newOpacity;
+        instructionsEl.style.opacity = newOpacity;
+    }
+
+    if (restartTransitionState.cubes.length === 0) return;
+
+    let activeCubes = 0;
+    restartTransitionState.cubes.forEach(c => {
+        c.baseX += c.vx;
+        c.baseY += c.vy;
+
+        c.swayAngle += c.swayFrequency;
+        const swayOffset = Math.sin(c.swayAngle) * c.swayAmplitude;
+        c.x = c.baseX + c.perpVec.x * swayOffset;
+        c.y = c.baseY + c.perpVec.y * swayOffset;
+        
+        c.rotationX += c.vRx;
+        c.rotationY += c.vRy;
+        
+        let isDone = false;
+        if (c.vx > 0 && c.x - c.size > canvas.width) isDone = true;
+        else if (c.vx < 0 && c.x + c.size < 0) isDone = true;
+        else if (c.vy > 0 && c.y - c.size > canvas.height) isDone = true;
+        else if (c.vy < 0 && c.y + c.size < 0) isDone = true;
+
+        if (!isDone) {
+            activeCubes++;
+        }
+    });
+
+    if (activeCubes === 0) {
+        restartTransitionState.cubes = [];
+        levelMessageEl.classList.add('hidden');
+        instructionsEl.textContent = "";
+        instructionsEl.style.opacity = 1;
+        startGame();
+    }
+}
+
+function drawRestartTransition() {
+    restartTransitionState.cubes.forEach(c => {
+        const rotX = createRotationMatrix('x', c.rotationX);
+        const rotY = createRotationMatrix('y', c.rotationY);
+        const orientation = multiplyMatrices(rotY, rotX);
+        drawWireframeObject(c, UNIT_CUBE_VERTICES, CUBE_EDGES, projectedVertices, orientation);
+    });
+}
+
 function extrudeShape(shapeDef) {
     const { path, holes = [] } = shapeDef; const vertices = []; const faces = []; const depth = 0.4; const shearX = -0.5; const shearY = 0.5;
     [...path, ...holes.flat()].forEach(p => { vertices.push({ x: p[0] - 2, y: p[1] - 2.5, z: -depth / 2 }); vertices.push({ x: p[0] - 2 + shearX, y: p[1] - 2.5 + shearY, z: depth / 2 }); });
@@ -621,7 +753,6 @@ function extrudeShape(shapeDef) {
 function draw3DObject(mesh, x, y, size, rotX, rotY) {
     const { vertices, faces } = mesh; const sX = Math.sin(rotX); const cX = Math.cos(rotX); const sY = Math.sin(rotY); const cY = Math.cos(rotY);
     const projected = vertices.map(v => {
-        // Apply X rotation first, then Y rotation
         const rotX_y = v.y * cX - v.z * sX;
         const rotX_z = v.y * sX + v.z * cX;
         const rotY_x = v.x * cY - rotX_z * sY;
@@ -643,7 +774,6 @@ function drawTitle() {
     const subtitleSize = 16;
     const subtitleMargin = 20;
 
-    // Total height includes SNOW, BLOCK, and the subtitle for centering
     const totalHeight = (lineHeight * 2) + subtitleSize + subtitleMargin;
     
     const startY = (canvas.height / 3 - totalHeight / 2) + 60;
@@ -663,19 +793,47 @@ function drawTitle() {
     drawLine("SNOW", snowY); 
     drawLine("BLOCK", blockY);
     
-    // Draw subtitle
-    ctx.fillStyle = `rgba(255, 255, 255, 0.8)`; 
-    ctx.font = `${subtitleSize}px "Patrick Hand", cursive`; 
+    const subtitleText = "the annoyingly possible puzzle game";
+    ctx.font = `${subtitleSize}px "Patrick Hand", cursive`;
     ctx.textAlign = 'center';
-    ctx.fillText("the annoyingly possible puzzle game", canvas.width / 2, subtitleY);
+    ctx.textBaseline = 'middle';
+    
+    const subtitleMetrics = ctx.measureText(subtitleText);
+    const subtitlePaddingX = 10;
+    const subtitlePaddingY = 5;
+    const subtitleBoxWidth = subtitleMetrics.width + subtitlePaddingX * 2;
+    const subtitleBoxHeight = subtitleSize + subtitlePaddingY * 2;
+    const subtitleBoxX = canvas.width / 2 - subtitleBoxWidth / 2;
+    const subtitleBoxY = subtitleY - subtitleBoxHeight / 2;
 
-    // Draw "Tap to begin"
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(subtitleBoxX, subtitleBoxY, subtitleBoxWidth, subtitleBoxHeight);
+
+    ctx.fillStyle = `rgba(255, 255, 255, 0.8)`;
+    ctx.fillText(subtitleText, canvas.width / 2, subtitleY);
+
+    const tapText = "Tap to begin";
+    const tapTextSize = 16;
+    const tapTextY = canvas.height - START_SIZE - 30;
+    
+    ctx.font = `${tapTextSize}px "Helvetica Neue", Arial, sans-serif`;
+    
+    const tapMetrics = ctx.measureText(tapText);
+    const tapPaddingX = 10;
+    const tapPaddingY = 5;
+    const tapBoxWidth = tapMetrics.width + tapPaddingX * 2;
+    const tapBoxHeight = tapTextSize + tapPaddingY * 2;
+    const tapBoxX = canvas.width / 2 - tapBoxWidth / 2;
+    const tapBoxY = tapTextY - tapBoxHeight / 2;
+
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(tapBoxX, tapBoxY, tapBoxWidth, tapBoxHeight);
+    
     const flash = (Math.sin(Date.now() / 400) + 1) / 2;
     ctx.fillStyle = `rgba(255, 255, 255, ${0.4 + flash * 0.6})`; 
-    ctx.font = '16px "Helvetica Neue", Arial, sans-serif'; 
-    ctx.textAlign = 'center';
-    const platformY = canvas.height - START_SIZE;
-    ctx.fillText("Tap to begin", canvas.width / 2, platformY);
+    ctx.fillText(tapText, canvas.width / 2, tapTextY);
+    
+    ctx.textBaseline = 'alphabetic';
 }
 
 
