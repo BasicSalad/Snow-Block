@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Snow Block</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Patrick+Hand&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="index.css" />
   </head>
   <body>
@@ -12,6 +18,10 @@
     </div>
     <div id="game-container">
       <canvas id="game-canvas"></canvas>
+      <div id="tutorial-overlay" class="hidden">
+        <div id="tutorial-finger"></div>
+        <div id="tutorial-arrow"></div>
+      </div>
       <div id="message-container">
         <p id="instructions"></p>
         <h1 id="level-message" class="hidden"></h1>

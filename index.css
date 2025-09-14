@@ -80,3 +80,121 @@ html, body {
   opacity: 0;
   pointer-events: none;
 }
+
+#tutorial-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s ease-out;
+  z-index: 200;
+}
+
+#tutorial-finger {
+    /* Main element: Palm and curled fingers */
+    width: 40px;
+    height: 45px;
+    border: 2px solid #fff;
+    border-radius: 5px 5px 20px 20px;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    margin-left: -25px;
+    margin-top: -25px;
+    transform-origin: center;
+    background: #000;
+}
+
+#tutorial-overlay.animate #tutorial-finger {
+    animation: slide-and-fade 2s ease-in-out 3;
+}
+
+
+#tutorial-finger::before {
+    /* Index finger */
+    content: '';
+    position: absolute;
+    bottom: 43px; /* Sits on top of the palm */
+    left: 12px;
+    width: 12px;
+    height: 40px;
+    border: 2px solid #fff;
+    border-radius: 6px;
+    background-color: #000;
+}
+
+#tutorial-finger::after {
+    /* Thumb */
+    content: '';
+    position: absolute;
+    top: 10px;
+    left: -18px;
+    width: 12px;
+    height: 25px;
+    border: 2px solid #fff;
+    border-radius: 6px;
+    background-color: #000;
+    transform: rotate(45deg);
+}
+
+#tutorial-arrow {
+  width: 4px;
+  height: 0;
+  background-color: rgba(255, 255, 255, 0.9);
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translateX(-50%);
+  margin-top: -100px;
+  opacity: 0;
+}
+
+#tutorial-overlay.animate #tutorial-arrow {
+    animation: draw-arrow 2s ease-in-out 3;
+}
+
+#tutorial-arrow::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    transform: translateX(-50%) translateY(-100%);
+    width: 0;
+    height: 0;
+    border-left: 10px solid transparent;
+    border-right: 10px solid transparent;
+    border-bottom: 15px solid rgba(255, 255, 255, 0.9);
+    opacity: 0;
+}
+
+#tutorial-overlay.animate #tutorial-arrow::after {
+    animation: show-arrow-head 2s ease-in-out 3;
+}
+
+
+@keyframes slide-and-fade {
+  0% { transform: translateY(80px) scale(1); opacity: 0; }
+  20% { transform: translateY(80px) scale(1); opacity: 1; }
+  30% { transform: translateY(80px) scale(1.1); }
+  40% { transform: translateY(80px) scale(1); }
+  70% { transform: translateY(-80px) scale(1); opacity: 1; }
+  100% { transform: translateY(-80px) scale(1); opacity: 0; }
+}
+
+@keyframes draw-arrow {
+  0%, 30% { height: 0; opacity: 0; margin-top: -20px; }
+  70% { height: 120px; opacity: 1; margin-top: -100px; }
+  100% { height: 120px; opacity: 0; margin-top: -100px; }
+}
+
+@keyframes show-arrow-head {
+    0%, 40% { opacity: 0; }
+    70%, 90% { opacity: 1; }
+    100% { opacity: 0; }
+}
